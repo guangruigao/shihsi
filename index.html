@@ -1,265 +1,255 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Crypto Trading AI Dashboard</title>
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        body { background-color: #020617; color: white; font-family: sans-serif; }
-        .glass { background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(12px); border: 1px solid rgba(51, 65, 85, 0.5); }
-    </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Crypto Signal Pro</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0f172a;color:#fff;padding:16px}
+.card{background:#1e293b;border-radius:16px;padding:16px;margin-bottom:16px}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+.big{font-size:32px;font-weight:700}
+.small{font-size:13px;color:#cbd5e1}
+.trade{padding:10px;background:#334155;border-radius:12px;margin:8px 0}
+</style>
 </head>
 <body>
-    <div id="root"></div>
 
-    <script type="text/babel">
-        const { useState, useEffect, useRef } = React;
+<div class="card">
+  <h1>BTC / ETH 实时信号系统</h1>
+  <div id="time"></div>
+</div>
 
-        // ========================================================
-        // 1. 你的原始算法逻辑 (完全保留，未作修改)
-        // ========================================================
-        const calcEMA = (data, period) => {
-            if (!data?.length) return 0;
-            const k = 2 / (period + 1);
-            let ema = data[0];
-            for (let i = 1; i < data.length; i++) ema = data[i] * k + ema * (1 - k);
-            return ema;
-        };
+<div class="card" id="btcCard"></div>
+<div class="card" id="ethCard"></div>
 
-        const calcRSI = (data, period = 14) => {
-            if (!data || data.length < period + 1) return 50;
-            let gains = 0, losses = 0;
-            for (let i = 1; i <= period; i++) {
-                const diff = data[i] - data[i - 1];
-                if (diff >= 0) gains += diff; else losses -= diff;
-            }
-            const rs = gains / (losses || 1);
-            return 100 - 100 / (1 + rs);
-        };
+<div class="card">
+  <h2>交易记录 / 回测</h2>
+  <div id="stats"></div>
+  <div id="tradeLog"></div>
+</div>
 
-        const calcVWAP = (candles) => {
-            const pv = candles.reduce((s, c) => s + c.close * c.volume, 0);
-            const v = candles.reduce((s, c) => s + c.volume, 0);
-            return v ? pv / v : 0;
-        };
+<script>
+const WEBHOOK="替换你的飞书webhook";
+let tradeLog=JSON.parse(localStorage.getItem("tradeLog")||"[]");
 
-        const calcATR = (candles, period = 14) => {
-            const trs = [];
-            for (let i = 1; i < candles.length; i++) {
-                const h = candles[i].high, l = candles[i].low, pc = candles[i - 1].close;
-                trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
-            }
-            return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
-        };
+function save(){
+  localStorage.setItem("tradeLog",JSON.stringify(tradeLog));
+}
 
-        const calcFib = (candles) => {
-            const recent = candles.slice(-50);
-            const high = Math.max(...recent.map(c => c.high));
-            const low = Math.min(...recent.map(c => c.low));
-            const range = high - low;
-            return { high, low, fib382: high - range * 0.382, fib500: high - range * 0.5, fib618: high - range * 0.618 };
-        };
+async function fetchCandles(instId,bar){
+  const url=`https://www.okx.com/api/v5/market/candles?instId=${instId}&bar=${bar}&limit=100`;
+  const res=await fetch(url);
+  const json=await res.json();
+  return json.data.map(k=>({
+    ts:+k[0],
+    open:+k[1],
+    high:+k[2],
+    low:+k[3],
+    close:+k[4],
+    vol:+k[5]
+  })).reverse();
+}
 
-        const scoreSystem = (candles, fearGreed = 50, news = []) => {
-            const closes = candles.map(c => c.close);
-            const volumes = candles.map(c => c.volume);
-            const last = closes.at(-1);
-            const ema20 = calcEMA(closes.slice(-20), 20);
-            const ema50 = calcEMA(closes.slice(-50), 50);
-            const ema20Prev = calcEMA(closes.slice(-21, -1), 20);
-            const slope = ema20 - ema20Prev;
-            const rsi = calcRSI(closes.slice(-15));
-            const macd = calcEMA(closes.slice(-12), 12) - calcEMA(closes.slice(-26), 26);
-            const avgVol = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-            const vwap = calcVWAP(candles);
-            const atr = calcATR(candles);
-            const fib = calcFib(candles);
-            const trend = (ema20 > ema50 ? 8 : 0) + (slope > 0 ? 6 : 0) + (last > vwap ? 6 : 0);
-            const prevHigh = Math.max(...candles.slice(-20).map(c => c.high));
-            const prevLow = Math.min(...candles.slice(-20).map(c => c.low));
-            let fibScore = 0;
-            if (Math.abs(last - fib.fib618) / last < 0.003) fibScore = 8;
-            const momentum = (macd > 0 ? 10 : 0) + (rsi > 50 && rsi < 70 ? 5 : 0);
-            const volumeScore = (volumes.at(-1) > avgVol ? 15 : 5);
-            
-            let total = trend + fibScore + momentum + volumeScore;
-            let signal = total >= 85 ? "强做多" : total >= 70 ? "偏多" : total >= 55 ? "观望" : "做空";
-            
-            const isLong = total >= 55;
-            const stopLoss = isLong ? prevLow - atr * 0.5 : prevHigh + atr * 0.5;
-            const riskDistance = Math.abs(last - stopLoss);
-            const tp2 = isLong ? last + riskDistance * 2 : last - riskDistance * 2;
+function ema(arr,p){
+  const k=2/(p+1);
+  let e=arr[0];
+  return arr.map(v=>e=v*k+e*(1-k));
+}
 
-            return { total, signal, stopLoss, tp2, prevHigh, prevLow, atr };
-        };
+function rsi(arr,p=14){
+  let gains=0,loss=0;
+  for(let i=1;i<=p;i++){
+    let d=arr[i]-arr[i-1];
+    if(d>=0) gains+=d;
+    else loss-=d;
+  }
+  let rs=gains/(loss||1);
+  return 100-(100/(1+rs));
+}
 
-        // ========================================================
-        // 2. 增强版 App 组件
-        // ========================================================
-        function App() {
-            const [btc, setBtc] = useState(null);
-            const [eth, setEth] = useState(null);
-            const [tradeLog, setTradeLog] = useState(() => JSON.parse(localStorage.getItem('trades') || '[]'));
-            const [lastTradeTimes, setLastTradeTimes] = useState(() => JSON.parse(localStorage.getItem('lastTradeTimes') || '{}'));
-            const [time, setTime] = useState(new Date());
+function score(c5,c15,c1h){
+  const close5=c5.map(x=>x.close);
+  const close15=c15.map(x=>x.close);
+  const close1h=c1h.map(x=>x.close);
 
-            // 记录日志并同步到 LocalStorage
-            useEffect(() => {
-                localStorage.setItem('trades', JSON.stringify(tradeLog));
-                localStorage.setItem('lastTradeTimes', JSON.stringify(lastTradeTimes));
-            }, [tradeLog, lastTradeTimes]);
+  const e20=ema(close5,20).at(-1);
+  const e50=ema(close5,50).at(-1);
+  const last=close5.at(-1);
 
-            const fetchCoin = async (instId) => {
-                try {
-                    const res = await fetch(`https://www.okx.com/api/v5/market/candles?instId=${instId}&bar=5m&limit=100`);
-                    const json = await res.json();
-                    const candles = json.data.reverse().map(i => ({ high:+i[2], low:+i[3], close:+i[4], volume:+i[5] }));
-                    const score = scoreSystem(candles);
-                    return { symbol: instId.split('-')[0], price: candles.at(-1).close, score };
-                } catch (e) { return null; }
-            };
+  let s=50;
 
-            const executeTrade = (coin) => {
-                const now = Date.now();
-                const lastTime = lastTradeTimes[coin.symbol] || 0;
-                const COOLDOWN = 30 * 60 * 1000; // 30分钟冷处理
+  if(last>e20) s+=10;
+  if(e20>e50) s+=15;
 
-                // 只有强信号且过冷冻期才开仓
-                if ((coin.score.total >= 88 || coin.score.total <= 40) && (now - lastTime > COOLDOWN)) {
-                    const newTrade = {
-                        id: Date.now(),
-                        time: new Date().toLocaleString(),
-                        symbol: coin.symbol,
-                        side: coin.score.total >= 88 ? "做多" : "做空",
-                        entry: coin.price,
-                        stopLoss: coin.score.stopLoss,
-                        takeProfit: coin.score.tp2, // 按照第二止盈位止盈
-                        margin: 100,
-                        leverage: 10,
-                        status: "持仓中",
-                        pnl: 0
-                    };
-                    setTradeLog(prev => [newTrade, ...prev].slice(0, 20));
-                    setLastTradeTimes(prev => ({ ...prev, [coin.symbol]: now }));
-                }
-            };
+  const r=rsi(close5);
+  if(r<30) s+=10;
+  if(r>70) s-=10;
 
-            const updatePositions = (prices) => {
-                setTradeLog(prev => prev.map(t => {
-                    if (t.status !== "持仓中") return t;
-                    const curPrice = prices[t.symbol];
-                    if (!curPrice) return t;
+  const t15=close15.at(-1)>ema(close15,20).at(-1);
+  const t1h=close1h.at(-1)>ema(close1h,20).at(-1);
 
-                    let status = "持仓中";
-                    let finalPrice = curPrice;
+  if(t15) s+=10; else s-=10;
+  if(t1h) s+=15; else s-=15;
 
-                    // 检查止盈止损
-                    if (t.side === "做多") {
-                        if (curPrice <= t.stopLoss) { status = "止损"; finalPrice = t.stopLoss; }
-                        else if (curPrice >= t.takeProfit) { status = "止盈"; finalPrice = t.takeProfit; }
-                    } else {
-                        if (curPrice >= t.stopLoss) { status = "止损"; finalPrice = t.stopLoss; }
-                        else if (curPrice <= t.takeProfit) { status = "止盈"; finalPrice = t.takeProfit; }
-                    }
+  return Math.max(0,Math.min(100,s));
+}
 
-                    const diff = t.side === "做多" ? (finalPrice - t.entry) : (t.entry - finalPrice);
-                    const pnl = (diff / t.entry) * (t.margin * t.leverage);
-                    return { ...t, pnl, status, exit: status !== "持仓中" ? finalPrice : null };
-                }));
-            };
+function signalText(s){
+  if(s>=88) return "强做多";
+  if(s>=75) return "做多";
+  if(s<=40) return "强做空";
+  if(s<=50) return "做空";
+  return "观望";
+}
 
-            const tick = async () => {
-                const [b, e] = await Promise.all([fetchCoin("BTC-USDT-SWAP"), fetchCoin("ETH-USDT-SWAP")]);
-                if (b) { setBtc(b); executeTrade(b); }
-                if (e) { setEth(e); executeTrade(e); }
-                updatePositions({ BTC: b?.price, ETH: e?.price });
-            };
+function addTrade(symbol,price,side){
+  const now=Date.now();
 
-            useEffect(() => {
-                tick();
-                const timer = setInterval(tick, 10000);
-                const clock = setInterval(() => setTime(new Date()), 1000);
-                return () => { clearInterval(timer); clearInterval(clock); };
-            }, [lastTradeTimes]);
+  const duplicated=tradeLog.some(t=>
+    t.symbol===symbol &&
+    t.side===side &&
+    now-t.createdAt<30*60*1000
+  );
 
-            return (
-                <div className="p-6 max-w-5xl mx-auto">
-                    <header className="flex justify-between items-center mb-8">
-                        <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">
-                            Quant Signal Dashboard
-                        </h1>
-                        <div className="text-slate-400 font-mono">{time.toLocaleString()}</div>
-                    </header>
+  if(duplicated) return;
 
-                    {/* 行情卡片 */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-10">
-                        {[btc, eth].map(coin => coin && (
-                            <div key={coin.symbol} className="glass rounded-3xl p-6">
-                                <div className="flex justify-between mb-4">
-                                    <span className="text-xl font-bold">{coin.symbol}/USDT</span>
-                                    <span className={coin.score.total > 60 ? "text-emerald-400" : "text-red-400"}>
-                                        {coin.score.signal} ({coin.score.total.toFixed(0)})
-                                    </span>
-                                </div>
-                                <div className="text-4xl font-mono mb-4">${coin.price.toLocaleString()}</div>
-                                <div className="grid grid-cols-2 gap-2 text-sm text-slate-400">
-                                    <div>止损: {coin.score.stopLoss.toFixed(2)}</div>
-                                    <div>止盈(TP2): {coin.score.tp2.toFixed(2)}</div>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
+  const trade={
+    id:now,
+    symbol,
+    side,
+    entry:price,
+    stopLoss:side.includes("多")?price*0.992:price*1.008,
+    takeProfit:side.includes("多")?price*1.015:price*0.985,
+    createdAt:now,
+    margin:100,
+    leverage:10,
+    notional:1000,
+    pnl:0,
+    roi:0,
+    status:"持仓中"
+  };
 
-                    {/* 虚拟交易记录 */}
-                    <div className="glass rounded-3xl p-6">
-                        <h2 className="text-xl font-bold mb-4">虚拟交易流水 (100U 10x)</h2>
-                        <div className="overflow-x-auto">
-                            <table className="w-full text-left text-sm">
-                                <thead className="text-slate-500 border-b border-slate-800">
-                                    <tr>
-                                        <th className="pb-3">时间</th>
-                                        <th className="pb-3">币种</th>
-                                        <th className="pb-3">方向</th>
-                                        <th className="pb-3">入场价</th>
-                                        <th className="pb-3">状态</th>
-                                        <th className="pb-3 text-right">盈亏 (USDT)</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {tradeLog.map(t => (
-                                        <tr key={t.id} className="border-b border-slate-800/50">
-                                            <td className="py-3 text-slate-400">{t.time.split(' ')[1]}</td>
-                                            <td className="py-3 font-bold">{t.symbol}</td>
-                                            <td className="py-3">
-                                                <span className={t.side === "做多" ? "text-emerald-400" : "text-red-400"}>{t.side}</span>
-                                            </td>
-                                            <td className="py-3 font-mono">{t.entry.toFixed(2)}</td>
-                                            <td className="py-3">
-                                                <span className={`px-2 py-0.5 rounded text-xs ${
-                                                    t.status === "止盈" ? "bg-emerald-500/20 text-emerald-400" : 
-                                                    t.status === "止损" ? "bg-red-500/20 text-red-400" : "bg-blue-500/20 text-blue-400"
-                                                }`}>{t.status}</span>
-                                            </td>
-                                            <td className={`py-3 text-right font-mono ${t.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                                                {t.pnl >= 0 ? "+" : ""}{t.pnl.toFixed(2)}
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                            {tradeLog.length === 0 && <div className="text-center py-10 text-slate-500">等待高胜率信号触发...</div>}
-                        </div>
-                    </div>
-                </div>
-            );
-        }
+  tradeLog.unshift(trade);
+  tradeLog=tradeLog.slice(0,30);
+  save();
+  pushFeishu(trade);
+}
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
-    </script>
+async function pushFeishu(t){
+  if(WEBHOOK.includes("替换")) return;
+
+  await fetch(WEBHOOK,{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({
+      msg_type:"text",
+      content:{
+        text:`🚨 ${t.symbol} ${t.side}
+入场:${t.entry.toFixed(2)}
+止损:${t.stopLoss.toFixed(2)}
+止盈:${t.takeProfit.toFixed(2)}`
+      }
+    })
+  });
+}
+
+function updateTrades(prices){
+  tradeLog=tradeLog.map(t=>{
+    if(t.status!=="持仓中") return t;
+
+    const px=prices[t.symbol];
+    let exit=null;
+
+    if(t.side.includes("多")){
+      if(px<=t.stopLoss) exit=t.stopLoss;
+      if(px>=t.takeProfit) exit=t.takeProfit;
+    }else{
+      if(px>=t.stopLoss) exit=t.stopLoss;
+      if(px<=t.takeProfit) exit=t.takeProfit;
+    }
+
+    const pnl=((t.side.includes("多")
+      ?(exit||px)-t.entry
+      :t.entry-(exit||px))/t.entry)*t.notional;
+
+    return {
+      ...t,
+      pnl,
+      roi:pnl/t.margin*100,
+      status:exit?(pnl>=0?"止盈":"止损"):"持仓中"
+    };
+  });
+
+  save();
+}
+
+function renderCard(id,name,price,scoreVal){
+  document.getElementById(id).innerHTML=`
+    <div class="grid">
+      <div>
+        <div class="small">${name}价格</div>
+        <div class="big">${price.toFixed(2)}</div>
+      </div>
+      <div>
+        <div class="small">评分</div>
+        <div class="big">${scoreVal}</div>
+      </div>
+    </div>
+    <div style="margin-top:12px">${signalText(scoreVal)}</div>
+  `;
+}
+
+function renderTrades(){
+  const win=tradeLog.filter(x=>x.status==="止盈").length;
+  const totalPnl=tradeLog.reduce((a,b)=>a+b.pnl,0);
+
+  document.getElementById("stats").innerHTML=
+    `总交易:${tradeLog.length} | 胜率:${tradeLog.length?((win/tradeLog.length)*100).toFixed(1):0}% | 累计:${totalPnl.toFixed(2)}U`;
+
+  document.getElementById("tradeLog").innerHTML=
+    tradeLog.map(t=>`
+      <div class="trade">
+        ${t.symbol} ${t.side} | ${t.status}
+        | ${t.pnl.toFixed(2)}U
+        | ${t.roi.toFixed(1)}%
+      </div>
+    `).join("");
+}
+
+async function load(){
+  document.getElementById("time").innerText=new Date().toLocaleString();
+
+  const [b5,b15,b1,bE5,bE15,bE1]=await Promise.all([
+    fetchCandles("BTC-USDT-SWAP","5m"),
+    fetchCandles("BTC-USDT-SWAP","15m"),
+    fetchCandles("BTC-USDT-SWAP","1H"),
+    fetchCandles("ETH-USDT-SWAP","5m"),
+    fetchCandles("ETH-USDT-SWAP","15m"),
+    fetchCandles("ETH-USDT-SWAP","1H")
+  ]);
+
+  const btcScore=score(b5,b15,b1);
+  const ethScore=score(bE5,bE15,bE1);
+
+  const btcPrice=b5.at(-1).close;
+  const ethPrice=bE5.at(-1).close;
+
+  renderCard("btcCard","BTC",btcPrice,btcScore);
+  renderCard("ethCard","ETH",ethPrice,ethScore);
+
+  if(btcScore>=88) addTrade("BTC",btcPrice,"强做多");
+  if(btcScore<=40) addTrade("BTC",btcPrice,"强做空");
+
+  if(ethScore>=88) addTrade("ETH",ethPrice,"强做多");
+  if(ethScore<=40) addTrade("ETH",ethPrice,"强做空");
+
+  updateTrades({BTC:btcPrice,ETH:ethPrice});
+  renderTrades();
+}
+
+setInterval(load,10000);
+load();
+</script>
 </body>
 </html>
