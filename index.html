@@ -3,15 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>量化监控 - 多周期共振全功能版</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <title>量化监控终端</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        body { background-color: #020617; color: #ffffff; font-family: system-ui, -apple-system, sans-serif; }
+        body { background-color: #020617; color: #ffffff; margin: 0; }
         .card-bg { background-color: #0f172a; border: 1px solid #1e293b; }
-        .resonance-glow { box-shadow: 0 0 15px rgba(52, 211, 153, 0.15); border-color: #10b981; }
+        .resonance-glow { border-color: #10b981; box-shadow: 0 0 15px rgba(16, 185, 129, 0.2); }
     </style>
 </head>
 <body>
@@ -20,130 +20,85 @@
     <script type="text/babel">
         const { useState, useEffect } = React;
 
-        // ================= 核心算法 =================
+        // --- 核心计算函数 ---
         const calcEMA = (d, p) => { if (!d?.length) return 0; const k = 2/(p+1); let e = d[0]; for (let i=1; i<d.length; i++) e = d[i]*k + e*(1-k); return e; };
         const calcRSI = (d, p=14) => { if (!d || d.length < p+1) return 50; let g=0, l=0; for (let i=1; i<=p; i++) { const df=d[i]-d[i-1]; if(df>=0) g+=df; else l-=df; } return 100-100/(1+(g/(l||1))); };
         const calcATR = (c, p=14) => { const trs=[]; for(let i=1; i<c.length; i++) trs.push(Math.max(c[i].high-c[i].low, Math.abs(c[i].high-c[i-1].close), Math.abs(c[i].low-c[i-1].close))); return trs.slice(-p).reduce((a,b)=>a+b,0)/p; };
-        const calcVWAP = (c) => { const pv = c.reduce((s, x)=>s+x.close*x.volume, 0), v = c.reduce((s,x)=>s+x.volume,0); return v ? pv/v : 0; };
         
-        const scoreSystem = (candles, fearGreed=50) => {
+        const scoreSystem = (candles) => {
             const closes = candles.map(c => c.close);
             const last = closes.at(-1);
             const atr = calcATR(candles);
             const ema20 = calcEMA(closes.slice(-20), 20);
             const ema50 = calcEMA(closes.slice(-50), 50);
-            const vwap = calcVWAP(candles);
             const rsi = calcRSI(closes.slice(-15));
             const prevHigh = Math.max(...candles.slice(-20).map(c => c.high));
             const prevLow = Math.min(...candles.slice(-20).map(c => c.low));
 
-            const trend = (ema20 > ema50 ? 10 : 0) + (last > vwap ? 10 : 0);
-            const momentum = (rsi > 50 ? 10 : 0);
-            
-            // --- 计算完整三级止盈 ---
-            const isLong = (trend + momentum) >= 15;
+            const isLong = ema20 > ema50;
             const stopLoss = isLong ? prevLow - atr * 0.5 : prevHigh + atr * 0.5;
             const riskDist = Math.abs(last - stopLoss);
             
-            const tp1 = isLong ? last + riskDist : last - riskDist;
-            const tp2 = isLong ? last + riskDist * 2 : last - riskDist * 2;
-            const tp3 = isLong ? Math.max(prevHigh, last + riskDist * 3) : Math.min(prevLow, last - riskDist * 3);
-            const rr = riskDist ? Math.abs(tp2 - last) / riskDist : 0;
-
-            let total = trend + momentum + (fearGreed < 40 ? 10 : 0);
-            let signal = total >= 30 ? "做多" : total <= 10 ? "做空" : "观望";
-            
-            return { total, signal, last, stopLoss, tp1, tp2, tp3, rr, atr };
+            return {
+                total: (isLong ? 20 : 0) + (rsi > 50 ? 15 : 0),
+                signal: isLong ? "做多" : "做空",
+                last, stopLoss,
+                tp1: isLong ? last + riskDist : last - riskDist,
+                tp2: isLong ? last + riskDist * 2 : last - riskDist * 2,
+                tp3: isLong ? last + riskDist * 3 : last - riskDist * 3,
+                rr: 2.0
+            };
         };
 
         function App() {
             const [market, setMarket] = useState({ btc: null, eth: null });
-            const [time, setTime] = useState(new Date());
 
             const fetchCoin = async (instId) => {
-                const getK = async (bar) => {
-                    const res = await fetch(`https://www.okx.com/api/v5/market/candles?instId=${id}&bar=${bar}&limit=100`.replace('${id}', instId));
-                    const j = await res.json();
-                    return j.data.reverse().map(i => ({ high:+i[2], low:+i[3], close:+i[4], volume:+i[5] }));
-                };
+                try {
+                    const getK = async (bar) => {
+                        const res = await fetch(`https://www.okx.com/api/v5/market/candles?instId=${instId}&bar=${bar}&limit=100`);
+                        const j = await res.json();
+                        return j.data.map(i => ({ high:+i[2], low:+i[3], close:+i[4], volume:+i[5] })).reverse();
+                    };
+                    const [c5, c15, c1h] = await Promise.all([getK("5m"), getK("15m"), getK("1H")]);
+                    const s5 = scoreSystem(c5);
+                    const s15 = scoreSystem(c15);
+                    const s1h = scoreSystem(c1h);
 
-                const [c5, c15, c1h] = await Promise.all([getK("5m"), getK("15m"), getK("1H")]);
-                const s5 = scoreSystem(c5, 32);
-                const s15 = scoreSystem(c15, 32);
-                const s1h = scoreSystem(c1h, 32);
-
-                let finalScore = s5.total;
-                if (s1h.signal === "做多") finalScore += 15;
-                if (s1h.signal === "做空") finalScore -= 15;
-                if (s15.signal === "做多") finalScore += 8;
-
-                let finalSignal = finalScore >= 45 ? "强力做多" : finalScore >= 30 ? "偏多" : finalScore <= 10 ? "做空" : "观望";
-                if (s5.rr < 1.3 && finalSignal.includes("多")) finalSignal = "观望(损盈比差)";
-
-                return { price: s5.last, score: { ...s5, total: finalScore, signal: finalSignal, s15, s1h } };
+                    let finalScore = s5.total + (s1h.signal === "做多" ? 20 : -20);
+                    return { price: s5.last, score: { ...s5, total: finalScore, s15, s1h } };
+                } catch (e) { console.error(e); return null; }
             };
 
             const load = async () => {
-                const [b, e] = await Promise.all([fetchCoin("BTC-USDT-SWAP"), fetchCoin("ETH-USDT-SWAP")]);
+                const b = await fetchCoin("BTC-USDT-SWAP");
+                const e = await fetchCoin("ETH-USDT-SWAP");
                 setMarket({ btc: b, eth: e });
             };
 
-            useEffect(() => { load(); const t=setInterval(load, 10000); return ()=>clearInterval(t); }, []);
+            useEffect(() => { load(); const t = setInterval(load, 10000); return () => clearInterval(t); }, []);
 
             const Card = ({ name, data }) => {
-                if (!data) return null;
+                if (!data) return <div className="p-10 text-center opacity-50">加载 {name} 数据中...</div>;
                 const { score: s, price } = data;
-                const isRes = s.signal.includes("做多") && s.s1h.signal === "做多";
-
                 return (
-                    <div className={`card-bg rounded-3xl p-5 mb-4 ${isRes ? 'resonance-glow' : ''}`}>
-                        <div className="flex justify-between items-start mb-4">
-                            <div>
-                                <h2 className="text-slate-500 font-bold text-xs">{name}</h2>
-                                <div className="text-3xl font-black text-emerald-400">{s.total} <span className="text-xs opacity-50">分</span></div>
-                            </div>
-                            <div className="text-right font-mono font-bold text-xl">${price.toLocaleString()}</div>
+                    <div className={`card-bg rounded-3xl p-5 mb-4 ${s.s1h.signal === "做多" && s.signal === "做多" ? 'resonance-glow' : ''}`}>
+                        <div className="flex justify-between items-center mb-4">
+                            <h2 className="font-bold text-slate-400">{name}</h2>
+                            <div className="text-xl font-mono">${price.toLocaleString()}</div>
+                        </div>
+                        <div className="text-4xl font-black text-emerald-400 mb-4">{s.total} <span className="text-sm font-normal text-slate-500">SCORE</span></div>
+                        
+                        <div className="bg-slate-950 p-4 rounded-2xl space-y-3 border border-slate-800">
+                            <div className="flex justify-between text-xs"><span className="text-red-400">止损 SL</span><span className="font-mono">{s.stopLoss.toFixed(1)}</span></div>
+                            <div className="flex justify-between text-xs text-slate-400"><span>止盈 TP1</span><span className="font-mono">{s.tp1.toFixed(1)}</span></div>
+                            <div className="flex justify-between text-sm font-bold text-emerald-400"><span>标准 TP2</span><span className="font-mono">{s.tp2.toFixed(1)}</span></div>
+                            <div className="flex justify-between text-xs text-slate-400"><span>极限 TP3</span><span className="font-mono">{s.tp3.toFixed(1)}</span></div>
                         </div>
 
-                        {/* 多周期状态 */}
-                        <div className="grid grid-cols-2 gap-2 mb-4">
-                            <div className="bg-slate-900/80 p-2 rounded-xl text-center border border-slate-800">
-                                <div className="text-[10px] text-slate-500">15M</div>
-                                <div className="text-xs font-bold">{s.s15.signal}</div>
-                            </div>
-                            <div className="bg-slate-900/80 p-2 rounded-xl text-center border border-slate-800">
-                                <div className="text-[10px] text-slate-500">1H</div>
-                                <div className="text-xs font-bold">{s.s1h.signal}</div>
-                            </div>
-                        </div>
-
-                        {/* 交易计划区 - 恢复三级止盈 */}
-                        <div className="bg-slate-950 rounded-2xl p-4 border border-slate-800">
-                            <div className="flex justify-between text-sm mb-3">
-                                <span className="text-red-400 font-bold text-xs uppercase">止损 SL</span>
-                                <span className="font-mono text-red-400">{s.stopLoss.toFixed(1)}</span>
-                            </div>
-                            <div className="space-y-2 border-t border-slate-800/50 pt-3">
-                                <div className="flex justify-between text-xs">
-                                    <span className="text-slate-400">保守止盈 TP1</span>
-                                    <span className="font-mono text-emerald-400">{s.tp1.toFixed(1)}</span>
-                                </div>
-                                <div className="flex justify-between text-xs font-bold">
-                                    <span className="text-emerald-500">标准止盈 TP2</span>
-                                    <span className="font-mono text-emerald-500">{s.tp2.toFixed(1)}</span>
-                                </div>
-                                <div className="flex justify-between text-xs">
-                                    <span className="text-slate-400">极限止盈 TP3</span>
-                                    <span className="font-mono text-emerald-400">{s.tp3.toFixed(1)}</span>
-                                </div>
-                            </div>
-                            <div className="mt-3 pt-2 border-t border-slate-800/50 flex justify-between text-[10px] text-slate-500 uppercase tracking-tighter">
-                                <span>盈亏比 (RR)</span> <span>1 : {s.rr.toFixed(2)}</span>
-                            </div>
-                        </div>
-
-                        <div className={`mt-4 py-3 rounded-2xl text-center font-black ${s.signal.includes('多') ? 'bg-emerald-500/10 text-emerald-400' : 'bg-slate-800 text-slate-400'}`}>
-                            {s.signal}
+                        <div className="grid grid-cols-2 gap-2 mt-4">
+                            <div className="bg-slate-900 p-2 rounded-lg text-center text-[10px]">15M: {s.s15.signal}</div>
+                            <div className="bg-slate-900 p-2 rounded-lg text-center text-[10px]">1H: {s.s1h.signal}</div>
                         </div>
                     </div>
                 );
@@ -151,11 +106,9 @@
 
             return (
                 <div className="max-w-md mx-auto p-4">
-                    <div className="text-center mb-6 py-4">
-                        <div className="text-[10px] text-slate-500 uppercase tracking-[0.4em]">MTF Quantum Terminal</div>
-                    </div>
-                    <Card name="BTC-USDT-SWAP" data={market.btc} />
-                    <Card name="ETH-USDT-SWAP" data={market.eth} />
+                    <h1 className="text-center py-6 text-slate-500 text-xs tracking-widest uppercase font-bold">Resonance Terminal</h1>
+                    <Card name="BTC-USDT" data={market.btc} />
+                    <Card name="ETH-USDT" data={market.eth} />
                 </div>
             );
         }
