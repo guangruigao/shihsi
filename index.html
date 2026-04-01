@@ -3,15 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>量化监控终端</title>
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <title>量化共振终端 Pro</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        body { background-color: #020617; color: #ffffff; margin: 0; }
+        body { background-color: #020617; color: #ffffff; margin: 0; font-family: sans-serif; }
         .card-bg { background-color: #0f172a; border: 1px solid #1e293b; }
-        .resonance-glow { border-color: #10b981; box-shadow: 0 0 15px rgba(16, 185, 129, 0.2); }
+        .resonance-border { border-color: #10b981; box-shadow: 0 0 15px rgba(16, 185, 129, 0.1); }
+        .loading-dots:after { content: ' .'; animation: dots 1.5s steps(5, end) infinite; }
+        @keyframes dots { 0%, 20% { content: ' .'; } 40% { content: ' ..'; } 60% { content: ' ...'; } }
     </style>
 </head>
 <body>
@@ -20,10 +22,13 @@
     <script type="text/babel">
         const { useState, useEffect } = React;
 
-        // --- 核心计算函数 ---
+        // --- 核心算法 ---
         const calcEMA = (d, p) => { if (!d?.length) return 0; const k = 2/(p+1); let e = d[0]; for (let i=1; i<d.length; i++) e = d[i]*k + e*(1-k); return e; };
-        const calcRSI = (d, p=14) => { if (!d || d.length < p+1) return 50; let g=0, l=0; for (let i=1; i<=p; i++) { const df=d[i]-d[i-1]; if(df>=0) g+=df; else l-=df; } return 100-100/(1+(g/(l||1))); };
-        const calcATR = (c, p=14) => { const trs=[]; for(let i=1; i<c.length; i++) trs.push(Math.max(c[i].high-c[i].low, Math.abs(c[i].high-c[i-1].close), Math.abs(c[i].low-c[i-1].close))); return trs.slice(-p).reduce((a,b)=>a+b,0)/p; };
+        const calcATR = (c, p=14) => { 
+            const trs=[]; 
+            for(let i=1; i<c.length; i++) trs.push(Math.max(c[i].high-c[i].low, Math.abs(c[i].high-c[i-1].close), Math.abs(c[i].low-c[i-1].close))); 
+            return trs.slice(-p).reduce((a,b)=>a+b, 0)/p; 
+        };
         
         const scoreSystem = (candles) => {
             const closes = candles.map(c => c.close);
@@ -31,7 +36,6 @@
             const atr = calcATR(candles);
             const ema20 = calcEMA(closes.slice(-20), 20);
             const ema50 = calcEMA(closes.slice(-50), 50);
-            const rsi = calcRSI(closes.slice(-15));
             const prevHigh = Math.max(...candles.slice(-20).map(c => c.high));
             const prevLow = Math.min(...candles.slice(-20).map(c => c.low));
 
@@ -40,65 +44,96 @@
             const riskDist = Math.abs(last - stopLoss);
             
             return {
-                total: (isLong ? 20 : 0) + (rsi > 50 ? 15 : 0),
                 signal: isLong ? "做多" : "做空",
                 last, stopLoss,
                 tp1: isLong ? last + riskDist : last - riskDist,
                 tp2: isLong ? last + riskDist * 2 : last - riskDist * 2,
                 tp3: isLong ? last + riskDist * 3 : last - riskDist * 3,
-                rr: 2.0
+                rr: riskDist ? (Math.abs(last + riskDist * 2 - last) / riskDist).toFixed(2) : 0
             };
         };
 
         function App() {
             const [market, setMarket] = useState({ btc: null, eth: null });
+            const [error, setError] = useState(null);
 
             const fetchCoin = async (instId) => {
                 try {
                     const getK = async (bar) => {
-                        const res = await fetch(`https://www.okx.com/api/v5/market/candles?instId=${instId}&bar=${bar}&limit=100`);
+                        const url = `https://www.okx.com/api/v5/market/candles?instId=${instId}&bar=${bar}&limit=100`;
+                        const res = await fetch(url);
+                        if (!res.ok) throw new Error("网络请求失败");
                         const j = await res.json();
+                        if (!j.data) throw new Error("数据格式错误");
                         return j.data.map(i => ({ high:+i[2], low:+i[3], close:+i[4], volume:+i[5] })).reverse();
                     };
+
                     const [c5, c15, c1h] = await Promise.all([getK("5m"), getK("15m"), getK("1H")]);
                     const s5 = scoreSystem(c5);
                     const s15 = scoreSystem(c15);
                     const s1h = scoreSystem(c1h);
 
-                    let finalScore = s5.total + (s1h.signal === "做多" ? 20 : -20);
-                    return { price: s5.last, score: { ...s5, total: finalScore, s15, s1h } };
-                } catch (e) { console.error(e); return null; }
+                    // 多周期评分逻辑
+                    let score = 30; 
+                    if (s1h.signal === "做多") score += 20; else score -= 20;
+                    if (s15.signal === "做多") score += 10;
+                    if (s5.signal === "做多") score += 10;
+
+                    return { price: s5.last, score: { ...s5, total: score, s15, s1h } };
+                } catch (e) {
+                    setError(e.message);
+                    return null;
+                }
             };
 
             const load = async () => {
                 const b = await fetchCoin("BTC-USDT-SWAP");
                 const e = await fetchCoin("ETH-USDT-SWAP");
-                setMarket({ btc: b, eth: e });
+                if (b || e) {
+                    setMarket({ btc: b, eth: e });
+                    setError(null);
+                }
             };
 
             useEffect(() => { load(); const t = setInterval(load, 10000); return () => clearInterval(t); }, []);
 
             const Card = ({ name, data }) => {
-                if (!data) return <div className="p-10 text-center opacity-50">加载 {name} 数据中...</div>;
+                if (!data) return <div className="p-8 text-center text-slate-500 card-bg rounded-3xl mb-4 loading-dots">获取 {name} 数据中</div>;
                 const { score: s, price } = data;
+                const isRes = s.s1h.signal === "做多" && s.signal === "做多";
+
                 return (
-                    <div className={`card-bg rounded-3xl p-5 mb-4 ${s.s1h.signal === "做多" && s.signal === "做多" ? 'resonance-glow' : ''}`}>
+                    <div className={`card-bg rounded-3xl p-5 mb-4 ${isRes ? 'resonance-border' : ''}`}>
                         <div className="flex justify-between items-center mb-4">
-                            <h2 className="font-bold text-slate-400">{name}</h2>
-                            <div className="text-xl font-mono">${price.toLocaleString()}</div>
+                            <span className="text-slate-400 font-bold text-xs uppercase tracking-widest">{name}</span>
+                            <span className="font-mono text-xl font-bold">${price.toLocaleString()}</span>
                         </div>
-                        <div className="text-4xl font-black text-emerald-400 mb-4">{s.total} <span className="text-sm font-normal text-slate-500">SCORE</span></div>
                         
-                        <div className="bg-slate-950 p-4 rounded-2xl space-y-3 border border-slate-800">
-                            <div className="flex justify-between text-xs"><span className="text-red-400">止损 SL</span><span className="font-mono">{s.stopLoss.toFixed(1)}</span></div>
-                            <div className="flex justify-between text-xs text-slate-400"><span>止盈 TP1</span><span className="font-mono">{s.tp1.toFixed(1)}</span></div>
-                            <div className="flex justify-between text-sm font-bold text-emerald-400"><span>标准 TP2</span><span className="font-mono">{s.tp2.toFixed(1)}</span></div>
-                            <div className="flex justify-between text-xs text-slate-400"><span>极限 TP3</span><span className="font-mono">{s.tp3.toFixed(1)}</span></div>
+                        <div className="text-4xl font-black text-emerald-400 mb-6">
+                            {s.total} <span className="text-xs font-normal text-slate-500 uppercase tracking-tighter">Score</span>
+                        </div>
+
+                        <div className="bg-slate-950/80 rounded-2xl p-4 space-y-3 border border-slate-800">
+                            <div className="flex justify-between text-xs">
+                                <span className="text-red-400 font-bold">止损 SL</span>
+                                <span className="font-mono text-red-400">{s.stopLoss.toFixed(1)}</span>
+                            </div>
+                            <div className="pt-2 border-t border-slate-800/50 space-y-2">
+                                <div className="flex justify-between text-[11px] text-slate-400"><span>止盈 TP1</span><span className="font-mono">{s.tp1.toFixed(1)}</span></div>
+                                <div className="flex justify-between text-sm font-bold text-emerald-400"><span>标准 TP2</span><span className="font-mono">{s.tp2.toFixed(1)}</span></div>
+                                <div className="flex justify-between text-[11px] text-slate-400"><span>极限 TP3</span><span className="font-mono">{s.tp3.toFixed(1)}</span></div>
+                            </div>
                         </div>
 
                         <div className="grid grid-cols-2 gap-2 mt-4">
-                            <div className="bg-slate-900 p-2 rounded-lg text-center text-[10px]">15M: {s.s15.signal}</div>
-                            <div className="bg-slate-900 p-2 rounded-lg text-center text-[10px]">1H: {s.s1h.signal}</div>
+                            <div className="bg-slate-900/50 p-2 rounded-xl text-center border border-slate-800">
+                                <div className="text-[10px] text-slate-500 mb-1">15M Trend</div>
+                                <div className="text-xs font-bold">{s.s15.signal}</div>
+                            </div>
+                            <div className="bg-slate-900/50 p-2 rounded-xl text-center border border-slate-800">
+                                <div className="text-[10px] text-slate-500 mb-1">1H Trend</div>
+                                <div className="text-xs font-bold text-emerald-400">{s.s1h.signal}</div>
+                            </div>
                         </div>
                     </div>
                 );
@@ -106,7 +141,10 @@
 
             return (
                 <div className="max-w-md mx-auto p-4">
-                    <h1 className="text-center py-6 text-slate-500 text-xs tracking-widest uppercase font-bold">Resonance Terminal</h1>
+                    <div className="text-center py-6">
+                        <h1 className="text-slate-500 text-[10px] tracking-[0.4em] uppercase font-black">Resonance Pro</h1>
+                        {error && <div className="mt-2 text-red-500 text-[10px]">错误: {error} (检查网络或跨域)</div>}
+                    </div>
                     <Card name="BTC-USDT" data={market.btc} />
                     <Card name="ETH-USDT" data={market.eth} />
                 </div>
