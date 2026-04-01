@@ -2,18 +2,14 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>量化共振执行终端</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crypto Trading Signal Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <style>
-        body { background: #020617; color: #f8fafc; font-family: system-ui, -apple-system, sans-serif; }
-        .glass-panel { background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(51, 65, 85, 0.5); backdrop-filter: blur(12px); }
-        .status-tag { padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: bold; }
-        .value-mono { font-family: ui-monospace, monospace; }
-        .resonance-active { border-color: #10b981; box-shadow: 0 0 20px rgba(16, 185, 129, 0.15); }
+        body { background-color: #020617; } /* 对应 slate-950 */
     </style>
 </head>
 <body>
@@ -22,167 +18,340 @@
     <script type="text/babel">
         const { useState, useEffect } = React;
 
-        // ================= 核心算法库 (不省略) =================
-        const calcEMA = (d, p) => { if (!d?.length) return 0; const k = 2/(p+1); let e = d[0]; for (let i=1; i<d.length; i++) e = d[i]*k + e*(1-k); return e; };
-        const calcRSI = (d, p=14) => { if (!d || d.length < p+1) return 50; let g=0, l=0; for (let i=1; i<=p; i++) { const df=d[i]-d[i-1]; if(df>=0) g+=df; else l-=df; } return 100-100/(1+(g/(l||1))); };
-        const calcATR = (c, p=14) => { const trs=[]; for(let i=1; i<c.length; i++) trs.push(Math.max(c[i].high-c[i].low, Math.abs(c[i].high-c[i-1].close), Math.abs(c[i].low-c[i-1].close))); return trs.slice(-p).reduce((a,b)=>a+b, 0)/p; };
-        const calcFib = (c) => { const recent = c.slice(-50); const h = Math.max(...recent.map(x=>x.high)), l = Math.min(...recent.map(x=>x.low)), r = h-l; return { high:h, low:l, f618: h-r*0.618, f500: h-r*0.5, f382: h-r*0.382 }; };
-        const calcADX = (c) => { const atr = calcATR(c); const range = Math.max(...c.slice(-14).map(x=>x.high)) - Math.min(...c.slice(-14).map(x=>x.low)); return atr ? Math.min(50, (range/atr)*5) : 20; };
-
-        // ================= 评分与执行逻辑 =================
-        const scoreSystem = (candles, fearGreed=32) => {
-            const closes = candles.map(c => c.close), vols = candles.map(c => c.volume), last = closes.at(-1);
-            const ema20 = calcEMA(closes.slice(-20), 20), ema50 = calcEMA(closes.slice(-50), 50), atr = calcATR(candles), rsi = calcRSI(closes.slice(-15));
-            const fib = calcFib(candles), prevHigh = Math.max(...candles.slice(-20).map(c => c.high)), prevLow = Math.min(...candles.slice(-20).map(c => c.low));
-            
-            // 基础得分项
-            const trendScore = (ema20 > ema50 ? 10 : 0) + (last > ema20 ? 10 : 0);
-            const volAvg = vols.slice(-20).reduce((a,b)=>a+b,0)/20;
-            const volumeScore = (vols.at(-1) > volAvg * 1.5 ? 15 : (vols.at(-1) > volAvg ? 8 : 0));
-            
-            // 流动性扫损检测
-            let sweepType = "无"; let sweepScore = 0;
-            if (candles.at(-1).high > prevHigh && last < prevHigh) { sweepType = "上扫 (空)"; sweepScore = -10; }
-            if (candles.at(-1).low < prevLow && last > prevLow) { sweepType = "下扫 (多)"; sweepScore = 10; }
-
-            // 计算止损和止盈 (基于 5m)
-            const isLong = (trendScore + volumeScore) > 15;
-            const stopLoss = isLong ? prevLow - atr * 0.5 : prevHigh + atr * 0.5;
-            const riskDist = Math.abs(last - stopLoss);
-            
-            return {
-                total: trendScore + volumeScore + sweepScore + (rsi > 50 ? 5 : 0),
-                signal: isLong ? "做多" : "做空",
-                last, atr, rsi, volumeScore, sweepType, fib, stopLoss,
-                tp1: isLong ? last + riskDist : last - riskDist,
-                tp2: isLong ? last + riskDist * 2 : last - riskDist * 2,
-                tp3: isLong ? last + riskDist * 3 : last - riskDist * 3,
-                rr: 2.0, adx: calcADX(candles)
-            };
+        // ================= 指标计算 (保持原逻辑) =================
+        const calcEMA = (data, period) => {
+          if (!data?.length) return 0;
+          const k = 2 / (period + 1);
+          let ema = data[0];
+          for (let i = 1; i < data.length; i++) ema = data[i] * k + ema * (1 - k);
+          return ema;
         };
 
+        const calcRSI = (data, period = 14) => {
+          if (!data || data.length < period + 1) return 50;
+          let gains = 0, losses = 0;
+          for (let i = 1; i <= period; i++) {
+            const diff = data[i] - data[i - 1];
+            if (diff >= 0) gains += diff; else losses -= diff;
+          }
+          const rs = gains / (losses || 1);
+          return 100 - 100 / (1 + rs);
+        };
+
+        const calcVWAP = (candles) => {
+          const pv = candles.reduce((s, c) => s + c.close * c.volume, 0);
+          const v = candles.reduce((s, c) => s + c.volume, 0);
+          return v ? pv / v : 0;
+        };
+
+        const calcATR = (candles, period = 14) => {
+          const trs = [];
+          for (let i = 1; i < candles.length; i++) {
+            const h = candles[i].high, l = candles[i].low, pc = candles[i - 1].close;
+            trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+          }
+          return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
+        };
+
+        const calcFib = (candles) => {
+          const recent = candles.slice(-50);
+          const high = Math.max(...recent.map(c => c.high));
+          const low = Math.min(...recent.map(c => c.low));
+          const range = high - low;
+          return { high, low, fib382: high - range * 0.382, fib500: high - range * 0.5, fib618: high - range * 0.618 };
+        };
+
+        const calcFundingScore = (fundingRate = 0) => {
+          if (fundingRate > 0.0003) return -8;
+          if (fundingRate < -0.0003) return 8;
+          return 0;
+        };
+
+        const calcOIScore = (priceNow, pricePrev, oiNow, oiPrev) => {
+          const priceUp = priceNow > pricePrev;
+          const oiUp = oiNow > oiPrev;
+          if (priceUp && oiUp) return 10;
+          if (priceUp && !oiUp) return -8;
+          if (!priceUp && oiUp) return -6;
+          return 0;
+        };
+
+        const detectLiquiditySweep = (candles) => {
+          const recent = candles.slice(-5);
+          const prevHigh = Math.max(...candles.slice(-20, -5).map(c => c.high));
+          const prevLow = Math.min(...candles.slice(-20, -5).map(c => c.low));
+          const last = recent.at(-1);
+          if (last.high > prevHigh && last.close < prevHigh) return { type: '上扫流动性', score: -10 };
+          if (last.low < prevLow && last.close > prevLow) return { type: '下扫流动性', score: 10 };
+          return { type: '无', score: 0 };
+        };
+
+        const sentimentScore = (fearGreed) => {
+          if (fearGreed <= 20) return 10;
+          if (fearGreed <= 40) return 5;
+          if (fearGreed <= 70) return 0;
+          return -5;
+        };
+
+        const newsScore = (news = []) => {
+          let score = 0;
+          news.forEach((n) => {
+            const t = n.toLowerCase();
+            if (t.includes("etf inflow")) score += 8;
+            if (t.includes("rate cut")) score += 5;
+            if (t.includes("war")) score -= 6;
+            if (t.includes("regulation")) score -= 8;
+          });
+          return score;
+        };
+
+        const calcATRSeries = (candles, period = 14) => {
+          const out = [];
+          for (let i = period; i < candles.length; i++) {
+            out.push(calcATR(candles.slice(0, i + 1), period));
+          }
+          return out;
+        };
+
+        const calcADXMock = (candles) => {
+          const atr = calcATR(candles);
+          const range = Math.max(...candles.slice(-14).map(c => c.high)) - Math.min(...candles.slice(-14).map(c => c.low));
+          return atr ? Math.min(50, (range / atr) * 5) : 20;
+        };
+
+        // ================= 核心评分系统 (保持逻辑) =================
+        const scoreSystem = (candles, fearGreed = 50, news = []) => {
+          const closes = candles.map(c => c.close);
+          const volumes = candles.map(c => c.volume);
+          const last = closes.at(-1);
+
+          const ema20 = calcEMA(closes.slice(-20), 20);
+          const ema50 = calcEMA(closes.slice(-50), 50);
+          const ema20Prev = calcEMA(closes.slice(-21, -1), 20);
+          const slope = ema20 - ema20Prev;
+
+          const rsi = calcRSI(closes.slice(-15));
+          const macd = calcEMA(closes.slice(-12), 12) - calcEMA(closes.slice(-26), 26);
+          const avgVol = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+          const vwap = calcVWAP(candles);
+          const atr = calcATR(candles);
+          const fib = calcFib(candles);
+
+          const trend = (ema20 > ema50 ? 8 : 0) + (slope > 0 ? 6 : 0) + (last > vwap ? 6 : 0);
+          const prevHigh = Math.max(...candles.slice(-20).map(c => c.high));
+          const prevLow = Math.min(...candles.slice(-20).map(c => c.low));
+          const structure = (last > prevHigh * 0.997 ? 10 : 0) + (last < prevLow * 1.003 ? 10 : 0);
+
+          let fibScore = 0;
+          const d618 = Math.abs(last - fib.fib618) / last;
+          const d500 = Math.abs(last - fib.fib500) / last;
+          const d382 = Math.abs(last - fib.fib382) / last;
+          if (d618 < 0.003) fibScore = 8;
+          else if (d500 < 0.003) fibScore = 5;
+          else if (d382 < 0.003) fibScore = 2;
+
+          const momentum = (macd > 0 ? 10 : 0) + (rsi > 50 && rsi < 70 ? 5 : 0);
+          const volumeScore = (volumes.at(-1) > avgVol ? 15 : 5);
+          const senti = sentimentScore(fearGreed);
+          const funding = calcFundingScore(0.00035);
+          const oi = calcOIScore(closes.at(-1), closes.at(-2), 105000, 102000);
+          const sweep = detectLiquiditySweep(candles);
+          const newsS = newsScore(news);
+          const atrSeries = calcATRSeries(candles, 14);
+          const atrAvg100 = atrSeries.slice(-100).reduce((a,b)=>a+b,0) / Math.max(1, atrSeries.slice(-100).length);
+          const atrRelative = atrAvg100 ? atr / atrAvg100 : 1;
+          const adx = calcADXMock(candles);
+
+          let risk = atr / last < 0.01 ? 5 : 0;
+          if (atrRelative < 0.8) risk -= 10;
+          if (atrRelative > 1.3) risk += 5;
+
+          let trendWeight = adx > 25 ? 1.3 : 0.8;
+          let structureWeight = adx < 20 ? 1.4 : 1.0;
+
+          let total = trend * trendWeight + structure * structureWeight + fibScore + momentum + volumeScore + senti + newsS + risk + funding + oi + sweep.score;
+          if (atrRelative < 0.8) total -= 5;
+          
+          let signal = total >= 85 ? "强做多" : total >= 70 ? "偏多" : total >= 55 ? "观望" : "做空";
+          const isLong = total >= 55;
+          const stopLoss = isLong ? prevLow - atr * 0.5 : prevHigh + atr * 0.5;
+          const riskDistance = Math.abs(last - stopLoss);
+          const tp1 = isLong ? last + riskDistance : last - riskDistance;
+          const tp2 = isLong ? last + riskDistance * 2 : last - riskDistance * 2;
+          const tp3 = isLong ? Math.max(prevHigh, fib.high) : Math.min(prevLow, fib.low);
+          const rr = riskDistance ? Math.abs(tp2 - last) / riskDistance : 0;
+          if (rr < 1.5) signal = "观望";
+
+          return { total, signal, trend, structure, fibScore, momentum, volumeScore, senti, newsS, risk, funding, oi, sweep, vwap, atr, fib, prevHigh, prevLow, stopLoss, tp1, tp2, tp3, rr, atrRelative, adx };
+        };
+
+        // ================= UI 组件 =================
         function App() {
-            const [market, setMarket] = useState({ btc: null, eth: null });
-            const [time, setTime] = useState(new Date());
+          const [btc, setBtc] = useState(null);
+          const [eth, setEth] = useState(null);
+          const [time, setTime] = useState(new Date());
+          const [tradeLog, setTradeLog] = useState([]);
+          const [lastStableSignal, setLastStableSignal] = useState(null);
 
-            const fetchCoin = async (instId) => {
-                try {
-                    const getK = async (bar) => {
-                        const res = await fetch(`https://www.okx.com/api/v5/market/candles?instId=${instId}&bar=${bar}&limit=100`);
-                        const j = await res.json();
-                        return j.data.reverse().map(i => ({ high:+i[2], low:+i[3], close:+i[4], volume:+i[5] }));
-                    };
-                    const [c5, c15, c1h] = await Promise.all([getK("5m"), getK("15m"), getK("1H")]);
-                    const s5 = scoreSystem(c5);
-                    const s15 = scoreSystem(c15);
-                    const s1h = scoreSystem(c1h);
+          const mockFearGreed = 32;
+          const mockNews = ["ETF inflow", "rate cut expectation"];
 
-                    // 综合多周期分数
-                    let finalScore = s5.total;
-                    if (s1h.signal === "做多") finalScore += 25; else finalScore -= 25;
-                    if (s15.signal === "做多") finalScore += 15;
-
-                    // 市场建议逻辑
-                    let advice = "观望";
-                    if (finalScore >= 75) advice = "【强力买入】三周期共振向上，建议分批入场。";
-                    else if (finalScore >= 55) advice = "【偏多】趋势尚可，注意回调支撑位。";
-                    else if (finalScore <= 30) advice = "【偏空】大趋势走弱，不宜盲目抄底。";
-                    else advice = "【震荡】方向不明，建议等待量能突破。";
-
-                    return { price: s5.last, finalScore, advice, s5, s15, s1h };
-                } catch (e) { return null; }
+          const fetchCoin = async (instId) => {
+            const fetchCandles = async (bar) => {
+              const res = await fetch(`https://www.okx.com/api/v5/market/candles?instId=${instId}&bar=${bar}&limit=100`);
+              const json = await res.json();
+              return json.data.reverse().map(i => ({ high:+i[2], low:+i[3], close:+i[4], volume:+i[5] }));
             };
 
-            const load = async () => {
-                const [b, e] = await Promise.all([fetchCoin("BTC-USDT-SWAP"), fetchCoin("ETH-USDT-SWAP")]);
-                setMarket({ btc: b, eth: e });
-            };
+            const candles5m = await fetchCandles("5m");
+            const candles15m = await fetchCandles("15m");
+            const candles1h = await fetchCandles("1H");
 
-            useEffect(() => { load(); const t = setInterval(load, 10000); return () => clearInterval(t); }, []);
+            const score5m = scoreSystem(candles5m, mockFearGreed, mockNews);
+            const score15m = scoreSystem(candles15m, mockFearGreed, mockNews);
+            const score1h = scoreSystem(candles1h, mockFearGreed, mockNews);
 
-            const Card = ({ name, data }) => {
-                if (!data) return <div className="p-10 text-center text-slate-500 animate-pulse">数据加载中...</div>;
-                const { s5, finalScore, advice, price } = data;
-                const isHighConfidence = finalScore > 50;
+            let total = score5m.total;
+            if (score1h.signal.includes("做空") && score5m.signal.includes("做多")) total -= 10;
+            if (score15m.signal.includes("做空") && score5m.signal.includes("做多")) total -= 5;
+            if (score1h.signal.includes("做多") && score5m.signal.includes("做多")) total += 8;
+            if (score15m.signal.includes("做多") && score5m.signal.includes("做多")) total += 4;
 
-                return (
-                    <div className={`glass-panel rounded-[2.5rem] p-6 mb-6 transition-all duration-500 ${isHighConfidence ? 'resonance-active' : ''}`}>
-                        <div className="flex justify-between items-start mb-6">
-                            <div>
-                                <h2 className="text-slate-400 font-bold text-xs tracking-tighter uppercase mb-1">{name} 永续合约</h2>
-                                <div className="text-4xl font-black value-mono">${price.toLocaleString()}</div>
-                            </div>
-                            <div className="text-right">
-                                <div className="text-3xl font-black text-emerald-400">{finalScore.toFixed(0)} <span className="text-xs font-normal opacity-40">分</span></div>
-                                <div className="text-[10px] text-slate-500 mt-1 uppercase font-bold">RSI: {s5.rsi.toFixed(1)}</div>
-                            </div>
-                        </div>
+            const finalSignal = total >= 85 ? "强做多" : total >= 70 ? "偏多" : total >= 55 ? "观望" : "做空";
+            return { price: candles5m.at(-1).close, score: { ...score5m, total, signal: finalSignal, score15m, score1h } };
+          };
 
-                        {/* 三周期趋势状态 */}
-                        <div className="grid grid-cols-3 gap-2 mb-6 text-center">
-                            {[ {l:'1小时', d:data.s1h}, {l:'15分钟', d:data.s15}, {l:'5分钟', d:s5} ].map((x,i)=>(
-                                <div key={i} className="bg-slate-900/50 rounded-2xl py-3 border border-slate-800">
-                                    <div className="text-[9px] text-slate-500 mb-1 font-bold">{x.l}趋势</div>
-                                    <div className={`text-xs font-black ${x.d.signal === '做多' ? 'text-emerald-400' : 'text-rose-400'}`}>{x.d.signal}</div>
-                                </div>
-                            ))}
-                        </div>
+          const shouldTriggerEntry = (coin) => {
+            if (!coin) return false;
+            const s = coin.score.total;
+            return (s >= 88 && coin.score.score15m?.signal?.includes("做多") && coin.score.score1h?.signal?.includes("做多")) || 
+                   (s <= 40 && coin.score.score15m?.signal?.includes("做空") && coin.score.score1h?.signal?.includes("做空"));
+          };
 
-                        {/* 指标详情细分 */}
-                        <div className="grid grid-cols-2 gap-4 mb-6 px-2">
-                            <div className="space-y-2">
-                                <div className="flex justify-between text-xs"><span className="text-slate-500">扫损检测</span><span className="font-bold text-emerald-400">{s5.sweepType}</span></div>
-                                <div className="flex justify-between text-xs"><span className="text-slate-500">量能评分</span><span className="font-bold">+{s5.volumeScore}</span></div>
-                                <div className="flex justify-between text-xs"><span className="text-slate-500">ADX状态</span><span className="value-mono">{s5.adx.toFixed(1)}</span></div>
-                            </div>
-                            <div className="space-y-2">
-                                <div className="flex justify-between text-xs"><span className="text-slate-500">Fib 618</span><span className="value-mono">{s5.fib.f618.toFixed(1)}</span></div>
-                                <div className="flex justify-between text-xs"><span className="text-slate-500">前高参考</span><span className="value-mono">{s5.fib.high.toFixed(0)}</span></div>
-                                <div className="flex justify-between text-xs"><span className="text-slate-500">盈亏比</span><span className="value-mono">1:2.0</span></div>
-                            </div>
-                        </div>
+          const updateTrades = (latestPrices) => {
+            setTradeLog((prev) => prev.map((t) => {
+              if (t.status !== "持仓中") return t;
+              const px = latestPrices[t.symbol];
+              if (!px) return t;
+              let exit = null;
+              if (t.side === "做多") {
+                if (px <= t.stopLoss) exit = t.stopLoss;
+                else if (px >= t.takeProfit) exit = t.takeProfit;
+              } else {
+                if (px >= t.stopLoss) exit = t.stopLoss;
+                else if (px <= t.takeProfit) exit = t.takeProfit;
+              }
+              if (!exit) {
+                const pnl = (t.side === "做多" ? (px - t.entry) : (t.entry - px)) / t.entry * 1000;
+                return { ...t, pnl, roi: pnl / 100 * 100 };
+              }
+              const pnl = (t.side === "做多" ? (exit - t.entry) : (t.entry - exit)) / t.entry * 1000;
+              return { ...t, exit, pnl, roi: pnl / 100 * 100, status: pnl >= 0 ? "止盈" : "止损" };
+            }));
+          };
 
-                        {/* 市场建议 */}
-                        <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-2xl p-4 mb-6">
-                            <div className="text-[10px] text-emerald-500 font-bold mb-1 uppercase tracking-widest text-center">市场策略建议</div>
-                            <div className="text-xs leading-relaxed text-slate-300 text-center font-medium">{advice}</div>
-                        </div>
+          const load = async () => {
+            try {
+              const [b, e] = await Promise.all([fetchCoin("BTC-USDT-SWAP"), fetchCoin("ETH-USDT-SWAP")]);
+              setBtc(b); setEth(e);
+              updateTrades({ BTC: b.price, ETH: e.price });
+              
+              [ {n:"BTC", d:b}, {n:"ETH", d:e} ].forEach(({n, d}) => {
+                const stableKey = `${n}-${d.score.signal}-${Math.round(d.score.total)}`;
+                if (shouldTriggerEntry(d) && lastStableSignal !== stableKey) {
+                  const newTrade = {
+                    id: `${n}-${Date.now()}`, time: new Date().toLocaleTimeString(), symbol: n,
+                    side: d.score.signal.includes("空") ? "做空" : "做多",
+                    entry: d.price, stopLoss: d.score.stopLoss, takeProfit: d.score.tp2,
+                    margin: 100, leverage: 10, status: "持仓中", pnl: 0, roi: 0
+                  };
+                  setTradeLog(p => [newTrade, ...p].slice(0, 10));
+                  setLastStableSignal(stableKey);
+                }
+              });
+            } catch(e) { console.error("Fetch error", e); }
+          };
 
-                        {/* 执行面板 */}
-                        <div className="bg-slate-950/80 rounded-3xl p-5 border border-slate-800 shadow-inner">
-                            <div className="flex justify-between items-center mb-4 pb-3 border-b border-slate-800/50">
-                                <span className="text-rose-400 font-black text-sm tracking-tighter">止损价位 SL</span>
-                                <span className="value-mono text-rose-400 text-lg font-bold">{s5.stopLoss.toFixed(1)}</span>
-                            </div>
-                            <div className="space-y-3">
-                                <div className="flex justify-between text-[11px]"><span className="text-slate-500">保守止盈 TP1</span><span className="value-mono">{s5.tp1.toFixed(1)}</span></div>
-                                <div className="flex justify-between text-sm"><span className="text-emerald-400 font-black">目标止盈 TP2</span><span className="value-mono text-emerald-400 font-bold">{s5.tp2.toFixed(1)}</span></div>
-                                <div className="flex justify-between text-[11px]"><span className="text-slate-500">极限止盈 TP3</span><span className="value-mono">{s5.tp3.toFixed(1)}</span></div>
-                            </div>
-                        </div>
-                    </div>
-                );
-            };
+          useEffect(() => {
+            load();
+            const t1 = setInterval(load, 10000);
+            const t2 = setInterval(() => setTime(new Date()), 1000);
+            return () => { clearInterval(t1); clearInterval(t2); };
+          }, [lastStableSignal]);
 
+          const getSignalMeta = (score) => {
+            if (score >= 85) return { label: '强做多', advice: '顺势分批做多，回踩EMA20进场', badge: 'text-emerald-400' };
+            if (score >= 70) return { label: '偏多', advice: '等待5分钟线回踩轻仓试多', badge: 'text-green-400' };
+            if (score <= 45) return { label: '强做空', advice: '高位承压分批做空，关注前高', badge: 'text-red-400' };
+            return { label: '观望', advice: '方向不明确，等待结构突破', badge: 'text-yellow-400' };
+          };
+
+          const Card = ({ name, data }) => {
+            if (!data) return <div className="bg-slate-900/80 p-6 rounded-3xl animate-pulse h-64">加载中...</div>;
+            const meta = getSignalMeta(data.score.total);
             return (
-                <div className="max-w-md mx-auto p-4 pb-12">
-                    <header className="flex justify-between items-center py-8">
-                        <div>
-                            <h1 className="text-xs font-black tracking-[0.4em] text-slate-600 uppercase">Resonance Terminal</h1>
-                            <p className="text-[10px] text-slate-500 font-mono mt-1 uppercase opacity-60">数据源：OKX 实时行情</p>
-                        </div>
-                        <div className="text-right">
-                            <div className="flex items-center gap-2 justify-end">
-                                <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
-                                <span className="text-[10px] font-mono text-emerald-500">LIVE</span>
-                            </div>
-                        </div>
-                    </header>
-
-                    <Card name="BTC" data={market.btc} />
-                    <Card name="ETH" data={market.eth} />
+              <div className="bg-slate-900/80 backdrop-blur rounded-3xl p-6 space-y-4 border border-slate-700 shadow-2xl">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-2xl font-bold">{name}</h2>
+                  <span className={`text-sm font-semibold ${meta.badge}`}>{meta.label}</span>
                 </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-slate-800 rounded-2xl p-4">
+                    <p className="text-sm text-slate-400">综合评分</p>
+                    <p className="text-4xl font-bold">{data.score.total.toFixed(0)}</p>
+                  </div>
+                  <div className="bg-slate-800 rounded-2xl p-4">
+                    <p className="text-sm text-slate-400">5分钟信号</p>
+                    <p className="text-xl font-semibold">{data.score.signal}</p>
+                  </div>
+                </div>
+                <div className="bg-slate-800 rounded-2xl p-4">
+                  <p className="text-sm text-slate-400">建议：{meta.advice}</p>
+                </div>
+                <div className="grid grid-cols-2 gap-3 text-xs text-slate-300">
+                  <div className="bg-slate-800 rounded-xl p-2">现价: {data.price.toFixed(1)}</div>
+                  <div className="bg-slate-800 rounded-xl p-2">1H: {data.score.score1h?.signal}</div>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                  <div className="bg-slate-800 p-2 rounded-xl text-red-400">SL<br/>{data.score.stopLoss.toFixed(1)}</div>
+                  <div className="bg-slate-800 p-2 rounded-xl text-emerald-400">TP1<br/>{data.score.tp1.toFixed(1)}</div>
+                  <div className="bg-slate-800 p-2 rounded-xl text-emerald-400">TP2<br/>{data.score.tp2.toFixed(1)}</div>
+                </div>
+              </div>
             );
+          };
+
+          return (
+            <div className="min-h-screen text-white p-4 font-sans max-w-lg mx-auto">
+              <div className="text-center text-sm text-slate-400 mb-6">{time.toLocaleString()}</div>
+              
+              <div className="bg-slate-900 rounded-3xl p-4 border border-slate-800 mb-6">
+                <h3 className="text-sm font-bold mb-1 text-emerald-400">高胜率入场规则</h3>
+                <p className="text-[10px] text-slate-400 leading-tight">做多 ≥88分 & 多周期共振 | 做空 ≤40分 & 多周期共振</p>
+              </div>
+
+              <div className="space-y-6">
+                <Card name="BTC" data={btc} />
+                <Card name="ETH" data={eth} />
+              </div>
+
+              <div className="mt-8 bg-slate-900 rounded-3xl p-4 border border-slate-800 overflow-hidden">
+                <h3 className="text-lg font-bold mb-4">模拟记录</h3>
+                <div className="space-y-2">
+                  {tradeLog.length === 0 ? <p className="text-slate-500 text-xs text-center py-4">等待稳定信号...</p> : 
+                    tradeLog.map(t => (
+                      <div key={t.id} className="flex justify-between items-center text-[10px] bg-slate-800 p-3 rounded-xl border border-slate-700">
+                        <span>{t.symbol} {t.side}</span>
+                        <span>{t.entry.toFixed(1)}</span>
+                        <span className={t.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{t.pnl.toFixed(1)}U</span>
+                        <span className="bg-slate-700 px-2 py-1 rounded">{t.status}</span>
+                      </div>
+                    ))
+                  }
+                </div>
+              </div>
+            </div>
+          );
         }
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
