@@ -3,17 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Resonance Terminal Pro</title>
+    <title>Resonance Execution Terminal</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        body { background-color: #020617; color: #ffffff; font-family: -apple-system, system-ui, sans-serif; }
-        .glass-card { background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(51, 65, 85, 0.5); backdrop-filter: blur(10px); }
-        .resonance-active { border-color: #10b981; box-shadow: 0 0 20px rgba(16, 185, 129, 0.15); }
-        .label-text { font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
-        .value-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+        body { background: #020617; color: #f8fafc; font-family: ui-sans-serif, system-ui, sans-serif; }
+        .glass-panel { background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(51, 65, 85, 0.5); backdrop-filter: blur(12px); }
+        .indicator-box { background: rgba(30, 41, 59, 0.5); border-radius: 0.75rem; padding: 0.75rem; border: 1px solid rgba(71, 85, 105, 0.3); }
+        .resonance-glow { border-color: #10b981; box-shadow: 0 0 20px rgba(16, 185, 129, 0.15); }
+        .value-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; }
+        @keyframes pulse-soft { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+        .live-dot { width: 8px; height: 8px; background: #10b981; border-radius: 50%; animation: pulse-soft 2s infinite; }
     </style>
 </head>
 <body>
@@ -22,157 +24,157 @@
     <script type="text/babel">
         const { useState, useEffect } = React;
 
-        // ================= 核心算法库 (不省略) =================
+        // ================= 指标计算核心 =================
         const calcEMA = (d, p) => { if (!d?.length) return 0; const k = 2/(p+1); let e = d[0]; for (let i=1; i<d.length; i++) e = d[i]*k + e*(1-k); return e; };
         const calcRSI = (d, p=14) => { if (!d || d.length < p+1) return 50; let g=0, l=0; for (let i=1; i<=p; i++) { const df=d[i]-d[i-1]; if(df>=0) g+=df; else l-=df; } return 100-100/(1+(g/(l||1))); };
-        const calcATR = (c, p=14) => { const trs=[]; for(let i=1; i<c.length; i++) trs.push(Math.max(c[i].high-c[i].low, Math.abs(c[i].high-c[i-1].close), Math.abs(c[i].low-c[i-1].close))); return trs.slice(-p).reduce((a,b)=>a+b, 0)/p; };
         const calcVWAP = (c) => { const pv = c.reduce((s, x)=>s+x.close*x.volume, 0), v = c.reduce((s,x)=>s+x.volume,0); return v ? pv/v : 0; };
-        const calcADX = (c) => { const atr = calcATR(c); const range = Math.max(...c.slice(-14).map(x=>x.high)) - Math.min(...c.slice(-14).map(x=>x.low)); return atr ? Math.min(50, (range/atr)*5) : 20; };
+        const calcATR = (c, p=14) => { const trs=[]; for(let i=1; i<c.length; i++) trs.push(Math.max(c[i].high-c[i].low, Math.abs(c[i].high-c[i-1].close), Math.abs(c[i].low-c[i-1].close))); return trs.slice(-p).reduce((a,b)=>a+b,0)/p; };
+        const calcFib = (c) => { const recent = c.slice(-50); const h = Math.max(...recent.map(x=>x.high)), l = Math.min(...recent.map(x=>x.low)), r = h-l; return { high:h, low:l, f618: h-r*0.618, f500: h-r*0.5, f382: h-r*0.382 }; };
+        const calcADXMock = (c) => { const atr = calcATR(c); const range = Math.max(...c.slice(-14).map(x=>x.high)) - Math.min(...c.slice(-14).map(x=>x.low)); return atr ? Math.min(50, (range/atr)*5) : 20; };
 
-        // ================= 综合评分系统 =================
-        const runScoring = (candles, periodLabel) => {
-            const closes = candles.map(c => c.close);
-            const vols = candles.map(c => c.volume);
-            const last = closes.at(-1);
-            const lastVol = vols.at(-1);
-            const avgVol = vols.slice(-20).reduce((a,b)=>a+b, 0) / 20;
-            const atr = calcATR(candles);
-            const vwap = calcVWAP(candles);
-            const rsi = calcRSI(closes.slice(-15));
-            const ema20 = calcEMA(closes.slice(-20), 20);
-            const ema50 = calcEMA(closes.slice(-50), 50);
-            const adx = calcADX(candles);
-            
-            const prevHigh = Math.max(...candles.slice(-20).map(c => c.high));
-            const prevLow = Math.min(...candles.slice(-20).map(c => c.low));
+        // ================= 合约市场逻辑 =================
+        const calcFundingScore = (f = 0.0001) => f > 0.0003 ? -8 : (f < -0.0003 ? 8 : 0);
+        const calcOIScore = (p1, p2, oi1, oi2) => (p1 > p2 && oi1 > oi2) ? 10 : (p1 > p2 && oi1 < oi2) ? -8 : (p1 < p2 && oi1 > oi2) ? -6 : 0;
+        const detectSweep = (c) => {
+            const last = c.at(-1), prevHigh = Math.max(...c.slice(-20, -5).map(x=>x.high)), prevLow = Math.min(...c.slice(-20, -5).map(x=>x.low));
+            if (last.high > prevHigh && last.close < prevHigh) return { type: '上扫', score: -10 };
+            if (last.low < prevLow && last.close > prevLow) return { type: '下扫', score: 10 };
+            return { type: '无', score: 0 };
+        };
 
-            // 逻辑分项
-            const trendScore = (ema20 > ema50 ? 10 : 0) + (last > vwap ? 10 : 0);
-            const volScore = lastVol > avgVol * 1.5 ? 15 : (lastVol > avgVol ? 8 : 0);
-            const rsiScore = (rsi > 50 && rsi < 75) ? 10 : (rsi > 75 ? 5 : 0);
+        // ================= 核心评分系统 =================
+        const scoreSystem = (candles, fearGreed=50) => {
+            const closes = candles.map(c => c.close), volumes = candles.map(c => c.volume), last = closes.at(-1);
+            const ema20 = calcEMA(closes.slice(-20), 20), ema50 = calcEMA(closes.slice(-50), 50), vwap = calcVWAP(candles), atr = calcATR(candles), rsi = calcRSI(closes.slice(-15)), adx = calcADXMock(candles);
+            const fib = calcFib(candles), prevHigh = Math.max(...candles.slice(-20).map(c => c.high)), prevLow = Math.min(...candles.slice(-20).map(c => c.low));
             
-            const isLong = trendScore + volScore > 15;
+            // 基础逻辑分
+            const trend = (ema20 > ema50 ? 8 : 0) + (last > vwap ? 6 : 0);
+            const structure = (last > prevHigh * 0.997 ? 10 : 0) + (last < prevLow * 1.003 ? 10 : 0);
+            const volScore = (volumes.at(-1) > (volumes.slice(-20).reduce((a,b)=>a+b,0)/20) ? 15 : 5);
+            const sweep = detectSweep(candles);
+            
+            // 计算止损和盈亏比 (修复引用顺序错误)
+            const isLong = (trend + structure + volScore) > 20;
             const stopLoss = isLong ? prevLow - atr * 0.5 : prevHigh + atr * 0.5;
             const riskDist = Math.abs(last - stopLoss);
+            const tp1 = isLong ? last + riskDist : last - riskDist;
+            const tp2 = isLong ? last + riskDist * 2 : last - riskDist * 2;
+            const tp3 = isLong ? Math.max(prevHigh, fib.high) : Math.min(prevLow, fib.low);
+            const rr = riskDist ? Math.abs(tp2 - last) / riskDist : 0;
 
-            return {
-                label: periodLabel,
-                score: trendScore + volScore + rsiScore,
-                signal: isLong ? "BULL" : "BEAR",
-                last, atr, adx, rsi, volScore,
-                stopLoss,
-                tp1: isLong ? last + riskDist : last - riskDist,
-                tp2: isLong ? last + riskDist * 2 : last - riskDist * 2,
-                tp3: isLong ? last + riskDist * 3 : last - riskDist * 3,
-                rr: riskDist ? 2.0 : 0
-            };
+            let total = trend + structure + volScore + sweep.score + (rsi > 50 ? 5 : 0) + (fearGreed < 40 ? 5 : 0);
+            let signal = total >= 80 ? "强做多" : total >= 60 ? "偏多" : total >= 40 ? "观望" : "做空";
+            if (rr < 1.3) signal = "观望(损盈比差)";
+
+            return { total, signal, trend, structure, volScore, sweep, vwap, atr, fib, stopLoss, tp1, tp2, tp3, rr, adx, rsi };
         };
 
         function App() {
             const [market, setMarket] = useState({ btc: null, eth: null });
-            const [updateTime, setUpdateTime] = useState(new Date());
+            const [time, setTime] = useState(new Date());
 
-            const fetchFullResonance = async (instId) => {
-                try {
-                    const getK = async (bar) => {
-                        const res = await fetch(`https://www.okx.com/api/v5/market/candles?instId=${instId}&bar=${bar}&limit=100`);
-                        const j = await res.json();
-                        return j.data.map(i => ({ high:+i[2], low:+i[3], close:+i[4], volume:+i[5] })).reverse();
-                    };
+            const fetchCoin = async (instId) => {
+                const getK = async (bar) => {
+                    const res = await fetch(`https://www.okx.com/api/v5/market/candles?instId=${instId}&bar=${bar}&limit=100`);
+                    const j = await res.json();
+                    return j.data.reverse().map(i => ({ high:+i[2], low:+i[3], close:+i[4], volume:+i[5] }));
+                };
 
-                    const [c5, c15, c1h] = await Promise.all([getK("5m"), getK("15m"), getK("1H")]);
-                    const s5 = runScoring(c5, "5M");
-                    const s15 = runScoring(c15, "15M");
-                    const s1h = runScoring(c1h, "1H");
+                const [c5, c15, c1h] = await Promise.all([getK("5m"), getK("15m"), getK("1H")]);
+                const s5 = scoreSystem(c5, 32);
+                const s15 = scoreSystem(c15, 32);
+                const s1h = scoreSystem(c1h, 32);
 
-                    // 最终共振评分逻辑
-                    let finalScore = s5.score;
-                    if (s1h.signal === "BULL") finalScore += 25; else finalScore -= 25;
-                    if (s15.signal === "BULL") finalScore += 15;
-
-                    return { price: s5.last, finalScore, s5, s15, s1h };
-                } catch (e) { return null; }
+                // 多周期修正逻辑
+                let total = s5.total;
+                if (s1h.signal.includes("做多")) total += 15;
+                if (s1h.signal.includes("做空")) total -= 15;
+                
+                const finalSignal = total >= 75 ? "强势共振做多" : total >= 55 ? "建议试多" : total >= 35 ? "中立观望" : "寻找空单";
+                
+                return { 
+                    price: c5.at(-1).close, 
+                    score: { ...s5, total, signal: finalSignal, s15, s1h } 
+                };
             };
 
             const load = async () => {
-                const [b, e] = await Promise.all([fetchFullResonance("BTC-USDT-SWAP"), fetchFullResonance("ETH-USDT-SWAP")]);
+                const [b, e] = await Promise.all([fetchCoin("BTC-USDT-SWAP"), fetchCoin("ETH-USDT-SWAP")]);
                 setMarket({ btc: b, eth: e });
-                setUpdateTime(new Date());
             };
 
-            useEffect(() => { load(); const t = setInterval(load, 10000); return () => clearInterval(t); }, []);
+            useEffect(() => { load(); const t=setInterval(load, 10000); return ()=>clearInterval(t); }, []);
 
-            const CoinCard = ({ name, data }) => {
-                if (!data) return <div className="p-10 text-center animate-pulse text-slate-500">Connecting to Market...</div>;
-                const isRes = data.finalScore > 40;
+            const Card = ({ name, data }) => {
+                if (!data) return <div className="p-10 text-center animate-pulse">Loading {name} Data...</div>;
+                const { score: s, price } = data;
+                const isRes = s.signal.includes("多") && s.s1h.signal.includes("多");
 
                 return (
-                    <div className={`glass-card rounded-[2rem] p-6 mb-6 transition-all duration-500 ${isRes ? 'resonance-active' : ''}`}>
-                        {/* 头部：名称与价格 */}
-                        <div className="flex justify-between items-center mb-6">
+                    <div className={`glass-panel rounded-[2rem] p-6 mb-6 transition-all duration-500 ${isRes ? 'resonance-glow border-emerald-500' : ''}`}>
+                        <div className="flex justify-between items-start mb-6">
                             <div>
-                                <h2 className="text-slate-400 font-bold text-sm tracking-widest">{name} / USDT</h2>
-                                <div className="text-4xl font-black mt-1 value-mono">${data.price.toLocaleString()}</div>
+                                <div className="flex items-center gap-2 mb-1">
+                                    <div className="live-dot"></div>
+                                    <span className="text-slate-500 font-bold text-xs tracking-widest uppercase">{name}-PERP</span>
+                                </div>
+                                <div className="text-4xl font-black value-mono tracking-tighter">${price.toLocaleString()}</div>
                             </div>
                             <div className="text-right">
-                                <div className={`text-xs font-bold px-3 py-1 rounded-full ${isRes ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'}`}>
-                                    {isRes ? '强共振确认' : '等待信号'}
-                                </div>
-                                <div className="text-[10px] text-slate-500 mt-2">ADX: {data.s5.adx.toFixed(1)}</div>
+                                <div className="text-3xl font-black text-emerald-400">{s.total.toFixed(0)} <span className="text-xs font-normal opacity-50">PTS</span></div>
+                                <div className="text-[10px] text-slate-500 font-mono">ADX: {s.adx.toFixed(1)} | RSI: {s.rsi.toFixed(1)}</div>
                             </div>
                         </div>
 
-                        {/* 三周期评分阵列 */}
-                        <div className="grid grid-cols-3 gap-3 mb-6">
-                            {[data.s1h, data.s15, data.s5].map((s, i) => (
-                                <div key={i} className="bg-slate-900/50 rounded-2xl p-3 border border-slate-800/50 text-center">
-                                    <div className="label-text mb-1">{s.label} Trend</div>
-                                    <div className={`text-xs font-black ${s.signal === 'BULL' ? 'text-emerald-400' : 'text-red-400'}`}>{s.signal}</div>
-                                    <div className="text-[10px] text-slate-500 mt-1">Vol:{s.volScore}</div>
+                        {/* 三周期看板 */}
+                        <div className="grid grid-cols-3 gap-2 mb-6">
+                            {[ {l:'1H', d:s.s1h}, {l:'15M', d:s.s15}, {l:'5M实时', d:s} ].map((x,i)=>(
+                                <div key={i} className="indicator-box text-center">
+                                    <div className="text-[9px] text-slate-500 uppercase font-bold mb-1">{x.l}</div>
+                                    <div className={`text-[11px] font-black ${x.d.signal.includes('多') ? 'text-emerald-400' : 'text-rose-400'}`}>{x.d.signal}</div>
                                 </div>
                             ))}
                         </div>
 
-                        {/* 交易执行面板 */}
-                        <div className="bg-slate-950/90 rounded-[1.5rem] p-5 border border-slate-800">
-                            <div className="flex justify-between items-center mb-4">
-                                <span className="text-red-400 font-black text-sm">STOP LOSS</span>
-                                <span className="value-mono text-red-400 text-lg">{data.s5.stopLoss.toFixed(1)}</span>
+                        {/* 核心指标细节 */}
+                        <div className="grid grid-cols-2 gap-4 mb-6">
+                            <div className="space-y-2">
+                                <div className="flex justify-between text-xs"><span className="text-slate-500">扫损状态:</span><span className="text-emerald-400 font-bold">{s.sweep.type}</span></div>
+                                <div className="flex justify-between text-xs"><span className="text-slate-500">趋势强度:</span><span>{s.trend}</span></div>
+                                <div className="flex justify-between text-xs"><span className="text-slate-500">结构得分:</span><span>{s.structure}</span></div>
                             </div>
-                            
-                            <div className="space-y-3 pt-4 border-t border-slate-800">
-                                <div className="flex justify-between text-xs">
-                                    <span className="text-slate-500">TP1 (保守)</span>
-                                    <span className="value-mono text-slate-300">{data.s5.tp1.toFixed(1)}</span>
-                                </div>
-                                <div className="flex justify-between text-sm">
-                                    <span className="text-emerald-500 font-bold">TP2 (目标)</span>
-                                    <span className="value-mono text-emerald-500 font-bold">{data.s5.tp2.toFixed(1)}</span>
-                                </div>
-                                <div className="flex justify-between text-xs">
-                                    <span className="text-slate-500">TP3 (极限)</span>
-                                    <span className="value-mono text-slate-300">{data.s5.tp3.toFixed(1)}</span>
-                                </div>
-                            </div>
-                            
-                            <div className="mt-4 flex justify-between items-center text-[10px] text-slate-600 font-bold uppercase tracking-widest">
-                                <span>Risk Reward 1:2.0</span>
-                                <span>ATR: {data.s5.atr.toFixed(1)}</span>
+                            <div className="space-y-2">
+                                <div className="flex justify-between text-xs"><span className="text-slate-500">量能分:</span><span className="text-emerald-400 font-bold">{s.volScore}</span></div>
+                                <div className="flex justify-between text-xs"><span className="text-slate-500">盈亏比:</span><span className="value-mono">1:{s.rr.toFixed(1)}</span></div>
+                                <div className="flex justify-between text-xs"><span className="text-slate-500">Fib 618:</span><span className="value-mono">{s.fib.f618.toFixed(0)}</span></div>
                             </div>
                         </div>
 
-                        {/* 底部综合得分条 */}
-                        <div className="mt-6">
-                            <div className="flex justify-between text-[10px] mb-2 uppercase font-bold text-slate-500">
-                                <span>Final Confidence Score</span>
-                                <span>{data.finalScore} / 100</span>
+                        {/* 交易执行计划 */}
+                        <div className="bg-slate-950 rounded-2xl p-5 border border-slate-800 shadow-inner">
+                            <div className="flex justify-between text-sm mb-4">
+                                <span className="text-rose-400 font-black">STOP LOSS ⚡</span>
+                                <span className="value-mono text-rose-400 font-bold text-lg">{s.stopLoss.toFixed(1)}</span>
                             </div>
-                            <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                                <div 
-                                    className={`h-full transition-all duration-1000 ${isRes ? 'bg-emerald-500' : 'bg-slate-600'}`}
-                                    style={{ width: `${Math.min(100, Math.max(0, data.finalScore))}%` }}
-                                ></div>
+                            <div className="grid grid-cols-1 gap-3 pt-3 border-t border-slate-800">
+                                <div className="flex justify-between text-xs">
+                                    <span className="text-slate-500 font-bold">TAKE PROFIT 1 (ATR)</span>
+                                    <span className="value-mono text-slate-200">{s.tp1.toFixed(1)}</span>
+                                </div>
+                                <div className="flex justify-between text-sm">
+                                    <span className="text-emerald-500 font-black">TAKE PROFIT 2 (Standard)</span>
+                                    <span className="value-mono text-emerald-400 font-bold">{s.tp2.toFixed(1)}</span>
+                                </div>
+                                <div className="flex justify-between text-xs">
+                                    <span className="text-slate-500 font-bold">TAKE PROFIT 3 (Highs)</span>
+                                    <span className="value-mono text-slate-200">{s.tp3.toFixed(1)}</span>
+                                </div>
                             </div>
+                        </div>
+
+                        <div className={`mt-6 py-4 rounded-2xl text-center font-black tracking-widest text-lg ${s.signal.includes('多') ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-slate-800 text-slate-400'}`}>
+                            {s.signal}
                         </div>
                     </div>
                 );
@@ -180,21 +182,12 @@
 
             return (
                 <div className="max-w-md mx-auto p-4 pb-20">
-                    <header className="flex justify-between items-center py-6">
-                        <div>
-                            <h1 className="text-xs font-black tracking-[0.3em] text-slate-500 uppercase">Resonance Terminal</h1>
-                            <p className="text-[10px] text-slate-600 font-mono mt-1">{updateTime.toLocaleTimeString()}</p>
-                        </div>
-                        <div className="w-2 h-2 bg-emerald-500 rounded-full animate-ping"></div>
-                    </header>
-
-                    <CoinCard name="BTC" data={market.btc} />
-                    <CoinCard name="ETH" data={market.eth} />
-
-                    <footer className="text-[9px] text-slate-700 text-center leading-relaxed">
-                        MTF共振逻辑：1H主趋势(±25) + 15M过滤(±15) + 5M实时量能与结构确认。<br/>
-                        当三周期方向一致且 Vol Score 爆发时触发“强共振”。
-                    </footer>
+                    <div className="flex justify-between items-center py-8">
+                        <div className="text-xs font-black tracking-[0.4em] text-slate-600 uppercase">Resonance Terminal v2.5</div>
+                        <div className="text-[10px] text-slate-500 font-mono">{time.toLocaleTimeString()}</div>
+                    </div>
+                    <Card name="BTC" data={market.btc} />
+                    <Card name="ETH" data={market.eth} />
                 </div>
             );
         }
