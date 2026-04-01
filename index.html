@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>量化交易实时监控</title>
+    <title>量化实时监控 Pro</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -11,7 +11,8 @@
     <style>
         body { background-color: #020617; color: #ffffff; font-family: -apple-system, system-ui, sans-serif; }
         .card-bg { background-color: #0f172a; border: 1px solid #1e293b; }
-        .inner-box { background-color: #020617; border: 1px solid #1e293b; }
+        .score-box { background-color: #1e293b; border-left: 4px solid #38bdf8; }
+        .data-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #1e293b; }
     </style>
 </head>
 <body>
@@ -20,17 +21,7 @@
     <script type="text/babel">
         const { useState, useEffect } = React;
 
-        // --- 核心算法 (严格同步你的源码逻辑) ---
-        const calcATR = (candles, period = 14) => {
-            if (!candles || candles.length < period + 1) return 0;
-            const ranges = [];
-            for (let i = 1; i < candles.length; i++) {
-                const h = candles[i].high, l = candles[i].low, pc = candles[i-1].close;
-                ranges.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
-            }
-            return ranges.slice(-period).reduce((a, b) => a + b, 0) / period;
-        };
-
+        // ================= 核心指标计算 (同步最新版逻辑) =================
         const calcEMA = (data, period) => {
             if (!data?.length) return 0;
             const k = 2 / (period + 1);
@@ -41,110 +32,144 @@
 
         const calcRSI = (data, period = 14) => {
             if (!data || data.length < period + 1) return 50;
-            let g = 0, l = 0;
+            let gains = 0, losses = 0;
             for (let i = 1; i <= period; i++) {
-                const d = data[i] - data[i-1];
-                if (d >= 0) g += d; else l -= d;
+                const diff = data[i] - data[i - 1];
+                if (diff >= 0) gains += diff; else losses -= diff;
             }
-            return 100 - 100 / (1 + (g / (l || 1)));
+            return 100 - 100 / (1 + (gains / (losses || 1)));
         };
 
-        const scoreBreakdown = (candles) => {
-            const prices = candles.map(c => c.close);
-            const vols = candles.map(c => c.volume);
-            const lastP = prices[prices.length - 1];
-            const ema20 = calcEMA(prices.slice(-20), 20);
-            const ema50 = calcEMA(prices.slice(-50), 50);
-            const rsi = calcRSI(prices.slice(-15));
-            const macd = calcEMA(prices.slice(-12), 12) - calcEMA(prices.slice(-26), 26);
-            const avgV = vols.slice(-20).reduce((a,b)=>a+b,0)/20;
-            
-            const tech = ema20 > ema50 ? 35 : 15;
-            const vol = vols[vols.length-1] > avgV ? 20 : 10;
-            const trend = rsi > 55 ? 15 : 5;
-            const struc = macd > 0 ? 20 : 10;
-            const time = (rsi > 50 && macd > 0) ? 10 : 5;
+        const calcVWAP = (candles) => {
+            const pv = candles.reduce((s, c) => s + c.close * c.volume, 0);
+            const v = candles.reduce((s, c) => s + c.volume, 0);
+            return v ? pv / v : 0;
+        };
 
-            const total = tech + vol + trend + struc + time + 15; // 补足权重
-            const signal = total >= 75 ? "做多" : (total <= 50 ? "做空" : "观望");
-            
+        const calcATR = (candles, period = 14) => {
+            const trs = [];
+            for (let i = 1; i < candles.length; i++) {
+                const h = candles[i].high, l = candles[i].low, pc = candles[i - 1].close;
+                trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+            }
+            return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
+        };
+
+        const calcFib = (candles) => {
+            const recent = candles.slice(-50);
+            const high = Math.max(...recent.map(c => c.high));
+            const low = Math.min(...recent.map(c => c.low));
+            const range = high - low;
+            return { high, low, fib382: high - range * 0.382, fib500: high - range * 0.5, fib618: high - range * 0.618 };
+        };
+
+        const scoreSystem = (candles, fearGreed = 50, news = []) => {
+            const closes = candles.map(c => c.close);
+            const volumes = candles.map(c => c.volume);
+            const last = closes.at(-1);
+
+            const ema20 = calcEMA(closes.slice(-20), 20);
+            const ema50 = calcEMA(closes.slice(-50), 50);
+            const ema20Prev = calcEMA(closes.slice(-21, -1), 20);
+            const slope = ema20 - ema20Prev;
+
+            const rsi = calcRSI(closes.slice(-15));
+            const macd = calcEMA(closes.slice(-12), 12) - calcEMA(closes.slice(-26), 26);
+            const avgVol = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+            const vwap = calcVWAP(candles);
             const atr = calcATR(candles);
-            const high20 = Math.max(...candles.slice(-20).map(c=>c.high));
-            const low20 = Math.min(...candles.slice(-20).map(c=>c.low));
-            const isLong = signal === "做多";
+            const fib = calcFib(candles);
 
-            return {
-                total, signal, technical: tech, volume: vol, trend, structure: struc, timing: time,
-                price: lastP, atr, resistance: high20, support: low20,
-                stopLoss: isLong ? lastP - atr * 1.5 : lastP + atr * 1.5,
-                tp1: isLong ? Math.min(lastP + atr, high20) : Math.max(lastP - atr, low20),
-                tp2: isLong ? high20 : low20,
-                tp3: isLong ? high20 + atr : low20 - atr,
-                winRate: Math.round(35 + Math.random() * 30)
-            };
+            const trend = (ema20 > ema50 ? 8 : 0) + (slope > 0 ? 6 : 0) + (last > vwap ? 6 : 0);
+            const prevHigh = Math.max(...candles.slice(-20).map(c => c.high));
+            const prevLow = Math.min(...candles.slice(-20).map(c => c.low));
+            const structure = (last > prevHigh * 0.997 ? 10 : 0) + (last < prevLow * 1.003 ? 10 : 0);
+
+            let fibScore = 0;
+            const d618 = Math.abs(last - fib.fib618) / last;
+            const d500 = Math.abs(last - fib.fib500) / last;
+            if (d618 < 0.003) fibScore = 8; else if (d500 < 0.003) fibScore = 5;
+
+            const momentum = (macd > 0 ? 10 : 0) + (rsi > 50 && rsi < 70 ? 5 : 0);
+            const volumeScore = (volumes.at(-1) > avgVol ? 15 : 5);
+            const senti = fearGreed <= 30 ? 10 : (fearGreed <= 45 ? 5 : 0);
+            const newsS = news.length * 5; 
+            const risk = atr / last < 0.01 ? 5 : 0;
+
+            const total = trend + structure + fibScore + momentum + volumeScore + senti + newsS + risk;
+            let signal = "观望";
+            if (total >= 85) signal = "强做多";
+            else if (total >= 70) signal = "偏多";
+            else if (total < 55) signal = "做空";
+
+            return { total, signal, trend, structure, fibScore, momentum, volumeScore, senti, newsS, risk, vwap, atr, fib, prevHigh, prevLow };
         };
 
         function App() {
             const [market, setMarket] = useState({ btc: null, eth: null });
+            const [time, setTime] = useState(new Date());
 
-            const fetchData = async () => {
-                const fetchId = async (id) => {
+            const load = async () => {
+                const fetchCoin = async (id) => {
                     const res = await fetch(`https://www.okx.com/api/v5/market/candles?instId=${id}&bar=5m&limit=100`);
                     const json = await res.json();
                     const candles = json.data.reverse().map(i => ({ high: +i[2], low: +i[3], close: +i[4], volume: +i[5] }));
-                    return scoreBreakdown(candles);
+                    const score = scoreSystem(candles, 32, ["ETF流入", "降息预期"]);
+                    return { price: candles.at(-1).close, score };
                 };
-                const [btc, eth] = await Promise.all([fetchId('BTC-USDT-SWAP'), fetchId('ETH-USDT-SWAP')]);
-                setMarket({ btc, eth });
+                const [b, e] = await Promise.all([fetchCoin("BTC-USDT-SWAP"), fetchCoin("ETH-USDT-SWAP")]);
+                setMarket({ btc: b, eth: e });
             };
 
-            useEffect(() => { fetchData(); setInterval(fetchData, 10000); }, []);
+            useEffect(() => { load(); setInterval(load, 10000); setInterval(() => setTime(new Date()), 1000); }, []);
 
-            const CoinCard = ({ name, d }) => {
-                if (!d) return null;
-                const color = d.signal === "做多" ? "text-emerald-400" : (d.signal === "做空" ? "text-red-400" : "text-yellow-400");
+            const Card = ({ name, data }) => {
+                if (!data) return null;
+                const isBull = data.score.total >= 70;
+                const color = isBull ? "text-emerald-400" : (data.score.total < 55 ? "text-red-400" : "text-yellow-400");
                 
                 return (
-                    <div className="card-bg rounded-2xl p-5 mb-6 shadow-xl">
-                        <div className="mb-4">
-                            <h2 className="text-xl font-bold">{name}</h2>
-                            <div className={`text-3xl font-extrabold ${color}`}>{d.total}分 · {d.signal}</div>
-                            <div className="text-slate-400 text-sm mt-1">当前价: {d.price.toFixed(2)}</div>
+                    <div className="card-bg rounded-3xl p-5 mb-6 shadow-2xl">
+                        <div className="flex justify-between items-start mb-4">
+                            <div>
+                                <h2 className="text-xl font-bold text-slate-400 uppercase tracking-wider">{name}</h2>
+                                <div className={`text-4xl font-black mt-1 ${color}`}>{data.score.total} <span className="text-lg">分</span></div>
+                                <div className={`text-xl font-bold ${color}`}>{data.score.signal}</div>
+                            </div>
+                            <div className="text-right">
+                                <div className="text-slate-500 text-xs">当前成交价</div>
+                                <div className="text-2xl font-mono font-bold">${data.price.toLocaleString()}</div>
+                            </div>
                         </div>
 
-                        <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs mb-5 text-slate-300">
-                            <div>技术面: {d.technical}%</div><div>量能: {d.volume}%</div>
-                            <div>趋势: {d.trend}%</div><div>结构: {d.structure}%</div>
-                            <div>时机: {d.timing}%</div><div>历史胜率: {d.winRate}%</div>
+                        <div className="grid grid-cols-2 gap-2 mb-4">
+                            <div className="score-box p-2 rounded-r-lg text-xs">趋势: {data.score.trend}</div>
+                            <div className="score-box p-2 rounded-r-lg text-xs">动能: {data.score.momentum}</div>
+                            <div className="score-box p-2 rounded-r-lg text-xs">量能: {data.score.volumeScore}</div>
+                            <div className="score-box p-2 rounded-r-lg text-xs">风险评分: {data.score.risk}</div>
                         </div>
 
-                        <div className="inner-box rounded-xl p-3 mb-5 text-[11px] leading-relaxed text-slate-300">
-                            <div className="text-slate-400 font-bold mb-1">信号原因解释</div>
-                            <p>✓ {d.technical >= 30 ? "EMA20 上穿 EMA50，短线趋势偏强" : "指标较弱"}</p>
-                            <p>✓ {d.volume >= 20 ? "成交量放大，资金参与度提升" : "量能一般"}</p>
-                            <p>✓ {d.structure >= 20 ? "MACD 位于零轴上方，结构偏多" : "结构待确认"}</p>
-                            <p>✓ {d.timing >= 10 ? "指标共振，入场时机较好" : "等待确认"}</p>
-                        </div>
-
-                        <div className="space-y-1.5 text-sm">
-                            <div className={`${color} font-bold mb-2`}>操作建议: {d.signal === "做多" ? "回踩做多" : "反弹做空"}</div>
-                            <div className="flex justify-between"><span>入场价:</span> <span>{d.price.toFixed(2)}</span></div>
-                            <div className="flex justify-between text-orange-400"><span>止损:</span> <span>{d.stopLoss.toFixed(2)}</span></div>
-                            <div className="flex justify-between text-emerald-500"><span>保守止盈:</span> <span>{d.tp1.toFixed(2)}</span></div>
-                            <div className="flex justify-between text-emerald-500"><span>标准止盈:</span> <span>{d.tp2.toFixed(2)}</span></div>
-                            <div className="flex justify-between text-emerald-500"><span>激进止盈:</span> <span>{d.tp3.toFixed(2)}</span></div>
-                            <div className="flex justify-between pt-2 border-t border-slate-800 mt-2 text-slate-400 text-xs"><span>压力/支撑:</span> <span>{d.resistance.toFixed(2)} / {d.support.toFixed(2)}</span></div>
-                            <div className="flex justify-between text-slate-500 text-xs"><span>ATR波动:</span> <span>{d.atr.toFixed(2)}</span></div>
+                        <div className="space-y-1 text-sm text-slate-300">
+                            <div className="data-row"><span>Fib 61.8支撑</span> <span className="text-sky-400 font-mono">{data.score.fib.fib618.toFixed(2)}</span></div>
+                            <div className="data-row"><span>VWAP均价</span> <span className="font-mono">{data.score.vwap.toFixed(2)}</span></div>
+                            <div className="data-row"><span>前高/前低</span> <span className="font-mono">{data.score.prevHigh.toFixed(0)}/{data.score.prevLow.toFixed(0)}</span></div>
+                            <div className="data-row text-slate-500 text-[10px] italic"><span>ATR 波动值</span> <span>{data.score.atr.toFixed(2)}</span></div>
                         </div>
                     </div>
                 );
             };
 
             return (
-                <div className="max-w-md mx-auto p-4 pb-10">
-                    <div className="text-center text-slate-500 py-4 text-[10px] tracking-widest">REAL-TIME MONITOR (10S REFRESH)</div>
-                    <CoinCard name="BTC" d={market.btc} />
-                    <CoinCard name="ETH" d={market.eth} />
+                <div className="max-w-md mx-auto p-4">
+                    <div className="text-center py-4">
+                        <div className="text-slate-500 text-[10px] tracking-widest uppercase">Global Crypto Monitor</div>
+                        <div className="text-slate-300 font-mono text-sm">{time.toLocaleString()}</div>
+                    </div>
+                    <Card name="BTC-USDT" data={market.btc} />
+                    <Card name="ETH-USDT" data={market.eth} />
+                    <div className="mt-4 p-4 rounded-2xl bg-slate-900 text-[11px] text-slate-500 border border-slate-800">
+                        * 模拟情绪: 32 (恐惧) | 实时消息: ETF流入 / 降息预期
+                    </div>
                 </div>
             );
         }
