@@ -1,255 +1,214 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Crypto Signal Pro</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OKX 日内信号系统 Pro</title>
 <style>
-body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0f172a;color:#fff;padding:16px}
-.card{background:#1e293b;border-radius:16px;padding:16px;margin-bottom:16px}
-.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
-.big{font-size:32px;font-weight:700}
-.small{font-size:13px;color:#cbd5e1}
-.trade{padding:10px;background:#334155;border-radius:12px;margin:8px 0}
+body{margin:0;background:#0d1117;color:#fff;font-family:-apple-system;padding:12px}
+.wrap{max-width:520px;margin:auto}
+.card{background:#161b22;border-radius:14px;padding:14px;margin-bottom:12px}
+.row{display:flex;justify-content:space-between;margin:8px 0}
+.tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.tab{padding:10px;background:#1f2937;border-radius:10px;text-align:center;cursor:pointer}
+.active{border:1px solid #fff}
+input,select,button{width:100%;padding:10px;border-radius:10px;border:none;margin-top:8px}
+button{background:#238636;color:#fff}
+.big{font-size:28px;font-weight:700}
+.good{color:#4ade80}
+.warn{color:#facc15}
+.bad{color:#f87171}
 </style>
 </head>
 <body>
+<div class="wrap">
 
 <div class="card">
-  <h1>BTC / ETH 实时信号系统</h1>
-  <div id="time"></div>
+<div class="tabs" id="tabs"></div>
 </div>
 
-<div class="card" id="btcCard"></div>
-<div class="card" id="ethCard"></div>
+<div class="card">
+<div id="coinTitle">BTC-USDT-SWAP</div>
+<div class="big" id="price">--</div>
+<div class="row"><span>趋势</span><span id="trend">--</span></div>
+<div class="row"><span>评分</span><span id="score">--</span></div>
+<div class="row"><span>信号</span><span id="signal">等待</span></div>
+</div>
 
 <div class="card">
-  <h2>交易记录 / 回测</h2>
-  <div id="stats"></div>
-  <div id="tradeLog"></div>
+<div class="row"><span>支撑</span><span id="support">--</span></div>
+<div class="row"><span>压力</span><span id="resistance">--</span></div>
+<div class="row"><span>建议进场</span><span id="entry">--</span></div>
+<div class="row"><span>止损</span><span id="sl">--</span></div>
+<div class="row"><span>TP1</span><span id="tp1">--</span></div>
+<div class="row"><span>TP2</span><span id="tp2">--</span></div>
+</div>
+
+<div class="card">
+<div class="row"><span>本金</span><span><input id="capital" value="1000"></span></div>
+<div class="row"><span>杠杆</span><span><input id="lev" value="5"></span></div>
+<button onclick="runBacktest()">历史回测</button>
+<div id="backtestResult"></div>
+</div>
+
 </div>
 
 <script>
-const WEBHOOK="替换你的飞书webhook";
-let tradeLog=JSON.parse(localStorage.getItem("tradeLog")||"[]");
+const coins=[
+"BTC-USDT-SWAP",
+"ETH-USDT-SWAP",
+"SOL-USDT-SWAP",
+"XRP-USDT-SWAP",
+"DOGE-USDT-SWAP",
+"BNB-USDT-SWAP"
+];
 
-function save(){
-  localStorage.setItem("tradeLog",JSON.stringify(tradeLog));
+let current=coins[0];
+let ws=null;
+let lastPrice=0;
+
+function renderTabs(){
+ let html='';
+ coins.forEach(c=>{
+   html+=`<div class="tab ${c===current?'active':''}" onclick="switchCoin('${c}')">${c.split('-')[0]}</div>`;
+ });
+ document.getElementById('tabs').innerHTML=html;
 }
 
-async function fetchCandles(instId,bar){
-  const url=`https://www.okx.com/api/v5/market/candles?instId=${instId}&bar=${bar}&limit=100`;
-  const res=await fetch(url);
-  const json=await res.json();
-  return json.data.map(k=>({
-    ts:+k[0],
-    open:+k[1],
-    high:+k[2],
-    low:+k[3],
-    close:+k[4],
-    vol:+k[5]
-  })).reverse();
+function switchCoin(c){
+ current=c;
+ document.getElementById('coinTitle').innerText=c;
+ renderTabs();
+ connectWS();
+ loadMultiTF();
 }
 
-function ema(arr,p){
-  const k=2/(p+1);
-  let e=arr[0];
-  return arr.map(v=>e=v*k+e*(1-k));
+function connectWS(){
+ if(ws) ws.close();
+ ws=new WebSocket("wss://ws.okx.com:8443/ws/v5/public");
+ ws.onopen=()=>{
+   ws.send(JSON.stringify({
+     op:"subscribe",
+     args:[{channel:"tickers",instId:current}]
+   }));
+ };
+ ws.onmessage=(e)=>{
+   const msg=JSON.parse(e.data);
+   if(msg.data&&msg.data[0]){
+     lastPrice=parseFloat(msg.data[0].last);
+     document.getElementById('price').innerText=lastPrice.toFixed(2);
+     generateSignal();
+   }
+ };
 }
 
-function rsi(arr,p=14){
-  let gains=0,loss=0;
-  for(let i=1;i<=p;i++){
-    let d=arr[i]-arr[i-1];
-    if(d>=0) gains+=d;
-    else loss-=d;
-  }
-  let rs=gains/(loss||1);
-  return 100-(100/(1+rs));
+async function fetchKline(bar,limit=30){
+ const url=`https://www.okx.com/api/v5/market/candles?instId=${current}&bar=${bar}&limit=${limit}`;
+ const res=await fetch(url);
+ const json=await res.json();
+ return json.data.map(x=>({
+   close:parseFloat(x[4]),
+   volume:parseFloat(x[5]),
+   high:parseFloat(x[2]),
+   low:parseFloat(x[3])
+ })).reverse();
 }
 
-function score(c5,c15,c1h){
-  const close5=c5.map(x=>x.close);
-  const close15=c15.map(x=>x.close);
-  const close1h=c1h.map(x=>x.close);
-
-  const e20=ema(close5,20).at(-1);
-  const e50=ema(close5,50).at(-1);
-  const last=close5.at(-1);
-
-  let s=50;
-
-  if(last>e20) s+=10;
-  if(e20>e50) s+=15;
-
-  const r=rsi(close5);
-  if(r<30) s+=10;
-  if(r>70) s-=10;
-
-  const t15=close15.at(-1)>ema(close15,20).at(-1);
-  const t1h=close1h.at(-1)>ema(close1h,20).at(-1);
-
-  if(t15) s+=10; else s-=10;
-  if(t1h) s+=15; else s-=15;
-
-  return Math.max(0,Math.min(100,s));
+function ema(arr,period){
+ const k=2/(period+1);
+ let val=arr[0];
+ for(let i=1;i<arr.length;i++){
+   val=arr[i]*k+val*(1-k);
+ }
+ return val;
 }
 
-function signalText(s){
-  if(s>=88) return "强做多";
-  if(s>=75) return "做多";
-  if(s<=40) return "强做空";
-  if(s<=50) return "做空";
-  return "观望";
+async function loadMultiTF(){
+ const h1=await fetchKline("1H");
+ const m15=await fetchKline("15m");
+ const m5=await fetchKline("5m");
+
+ window.h1=h1;
+ window.m15=m15;
+ window.m5=m5;
+
+ generateSignal();
 }
 
-function addTrade(symbol,price,side){
-  const now=Date.now();
-
-  const duplicated=tradeLog.some(t=>
-    t.symbol===symbol &&
-    t.side===side &&
-    now-t.createdAt<30*60*1000
-  );
-
-  if(duplicated) return;
-
-  const trade={
-    id:now,
-    symbol,
-    side,
-    entry:price,
-    stopLoss:side.includes("多")?price*0.992:price*1.008,
-    takeProfit:side.includes("多")?price*1.015:price*0.985,
-    createdAt:now,
-    margin:100,
-    leverage:10,
-    notional:1000,
-    pnl:0,
-    roi:0,
-    status:"持仓中"
-  };
-
-  tradeLog.unshift(trade);
-  tradeLog=tradeLog.slice(0,30);
-  save();
-  pushFeishu(trade);
+function volumeDecline(data){
+ const len=data.length;
+ return data[len-1].volume < data[len-2].volume &&
+        data[len-2].volume < data[len-3].volume;
 }
 
-async function pushFeishu(t){
-  if(WEBHOOK.includes("替换")) return;
+function generateSignal(){
+ if(!window.h1||!window.m15||!window.m5||!lastPrice) return;
 
-  await fetch(WEBHOOK,{
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({
-      msg_type:"text",
-      content:{
-        text:`🚨 ${t.symbol} ${t.side}
-入场:${t.entry.toFixed(2)}
-止损:${t.stopLoss.toFixed(2)}
-止盈:${t.takeProfit.toFixed(2)}`
-      }
-    })
-  });
+ const h1close=h1.map(x=>x.close);
+ const ema20=ema(h1close.slice(-20),20);
+ const ema60=ema(h1close.slice(-30),30);
+
+ const bullish=ema20>ema60;
+ const trend=bullish?"多头":"空头";
+
+ const lows=m15.slice(-10).map(x=>x.low);
+ const highs=m15.slice(-10).map(x=>x.high);
+
+ const support=Math.min(...lows);
+ const resistance=Math.max(...highs);
+
+ const volOk=volumeDecline(m5.slice(-5));
+
+ let score=0;
+ if(bullish) score+=35;
+ if(Math.abs(lastPrice-support)/lastPrice<0.003) score+=30;
+ if(volOk) score+=20;
+ if(lastPrice>support) score+=15;
+
+ const signal=score>=80?"强信号":score>=65?"观察":"等待";
+
+ const sl=(support*0.998).toFixed(2);
+ const tp1=resistance.toFixed(2);
+ const tp2=(resistance+(resistance-support)*0.8).toFixed(2);
+
+ document.getElementById('trend').innerHTML=trend;
+ document.getElementById('score').innerHTML=score;
+ document.getElementById('signal').innerHTML=signal;
+ document.getElementById('support').innerHTML=support.toFixed(2);
+ document.getElementById('resistance').innerHTML=resistance.toFixed(2);
+ document.getElementById('entry').innerHTML=`${support.toFixed(2)} - ${lastPrice.toFixed(2)}`;
+ document.getElementById('sl').innerHTML=sl;
+ document.getElementById('tp1').innerHTML=tp1;
+ document.getElementById('tp2').innerHTML=tp2;
 }
 
-function updateTrades(prices){
-  tradeLog=tradeLog.map(t=>{
-    if(t.status!=="持仓中") return t;
+async function runBacktest(){
+ const data=await fetchKline("5m",100);
+ let win=0,total=0,pnl=0;
 
-    const px=prices[t.symbol];
-    let exit=null;
+ for(let i=20;i<data.length-5;i++){
+   const support=Math.min(...data.slice(i-10,i).map(x=>x.low));
+   const entry=data[i].close;
+   const next=data[i+3].close;
+   total++;
+   if(next>entry){win++; pnl+=1}
+   else pnl-=1;
+ }
 
-    if(t.side.includes("多")){
-      if(px<=t.stopLoss) exit=t.stopLoss;
-      if(px>=t.takeProfit) exit=t.takeProfit;
-    }else{
-      if(px>=t.stopLoss) exit=t.stopLoss;
-      if(px<=t.takeProfit) exit=t.takeProfit;
-    }
+ const rate=((win/total)*100).toFixed(1);
 
-    const pnl=((t.side.includes("多")
-      ?(exit||px)-t.entry
-      :t.entry-(exit||px))/t.entry)*t.notional;
-
-    return {
-      ...t,
-      pnl,
-      roi:pnl/t.margin*100,
-      status:exit?(pnl>=0?"止盈":"止损"):"持仓中"
-    };
-  });
-
-  save();
+ document.getElementById('backtestResult').innerHTML=
+   `<div style="margin-top:10px">
+    胜率: ${rate}%<br>
+    总交易: ${total}<br>
+    模拟收益: ${pnl}R
+   </div>`;
 }
 
-function renderCard(id,name,price,scoreVal){
-  document.getElementById(id).innerHTML=`
-    <div class="grid">
-      <div>
-        <div class="small">${name}价格</div>
-        <div class="big">${price.toFixed(2)}</div>
-      </div>
-      <div>
-        <div class="small">评分</div>
-        <div class="big">${scoreVal}</div>
-      </div>
-    </div>
-    <div style="margin-top:12px">${signalText(scoreVal)}</div>
-  `;
-}
-
-function renderTrades(){
-  const win=tradeLog.filter(x=>x.status==="止盈").length;
-  const totalPnl=tradeLog.reduce((a,b)=>a+b.pnl,0);
-
-  document.getElementById("stats").innerHTML=
-    `总交易:${tradeLog.length} | 胜率:${tradeLog.length?((win/tradeLog.length)*100).toFixed(1):0}% | 累计:${totalPnl.toFixed(2)}U`;
-
-  document.getElementById("tradeLog").innerHTML=
-    tradeLog.map(t=>`
-      <div class="trade">
-        ${t.symbol} ${t.side} | ${t.status}
-        | ${t.pnl.toFixed(2)}U
-        | ${t.roi.toFixed(1)}%
-      </div>
-    `).join("");
-}
-
-async function load(){
-  document.getElementById("time").innerText=new Date().toLocaleString();
-
-  const [b5,b15,b1,bE5,bE15,bE1]=await Promise.all([
-    fetchCandles("BTC-USDT-SWAP","5m"),
-    fetchCandles("BTC-USDT-SWAP","15m"),
-    fetchCandles("BTC-USDT-SWAP","1H"),
-    fetchCandles("ETH-USDT-SWAP","5m"),
-    fetchCandles("ETH-USDT-SWAP","15m"),
-    fetchCandles("ETH-USDT-SWAP","1H")
-  ]);
-
-  const btcScore=score(b5,b15,b1);
-  const ethScore=score(bE5,bE15,bE1);
-
-  const btcPrice=b5.at(-1).close;
-  const ethPrice=bE5.at(-1).close;
-
-  renderCard("btcCard","BTC",btcPrice,btcScore);
-  renderCard("ethCard","ETH",ethPrice,ethScore);
-
-  if(btcScore>=88) addTrade("BTC",btcPrice,"强做多");
-  if(btcScore<=40) addTrade("BTC",btcPrice,"强做空");
-
-  if(ethScore>=88) addTrade("ETH",ethPrice,"强做多");
-  if(ethScore<=40) addTrade("ETH",ethPrice,"强做空");
-
-  updateTrades({BTC:btcPrice,ETH:ethPrice});
-  renderTrades();
-}
-
-setInterval(load,10000);
-load();
+renderTabs();
+connectWS();
+loadMultiTF();
+setInterval(loadMultiTF,30000);
 </script>
 </body>
 </html>
