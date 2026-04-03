@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>OKX Signal Pro</title>
+<title>OKX 5秒刷新信号系统</title>
 <style>
 body{
     margin:0;
@@ -57,16 +57,16 @@ body{
 
 <div class="card">
     <div id="coinTitle">BTC-USDT-SWAP</div>
-    <div class="big" id="price">连接中...</div>
-    <div class="row"><span>趋势</span><span id="trend">等待</span></div>
-    <div class="row"><span>评分</span><span id="score">0</span></div>
+    <div class="big" id="price">加载中...</div>
+    <div class="row"><span>趋势</span><span id="trend">--</span></div>
+    <div class="row"><span>评分</span><span id="score">--</span></div>
     <div class="row"><span>信号</span><span id="signal">等待</span></div>
 </div>
 
 <div class="card">
     <div class="row"><span>支撑</span><span id="support">--</span></div>
     <div class="row"><span>压力</span><span id="resistance">--</span></div>
-    <div class="row"><span>进场</span><span id="entry">--</span></div>
+    <div class="row"><span>建议进场</span><span id="entry">--</span></div>
     <div class="row"><span>止损</span><span id="sl">--</span></div>
     <div class="row"><span>TP1</span><span id="tp1">--</span></div>
     <div class="row"><span>TP2</span><span id="tp2">--</span></div>
@@ -85,120 +85,81 @@ const coins = [
 ];
 
 let current = coins[0];
-let ws = null;
-let priceHistory = [];
+let history = [];
 
 function renderTabs(){
-    let html = '';
+    let html = "";
     coins.forEach(c=>{
         html += `<div class="tab ${c===current?'active':''}" onclick="switchCoin('${c}')">${c.split('-')[0]}</div>`;
     });
-    document.getElementById('tabs').innerHTML = html;
+    document.getElementById("tabs").innerHTML = html;
 }
 
 function switchCoin(c){
     current = c;
-    priceHistory = [];
-    document.getElementById('coinTitle').innerText = c;
+    history = [];
+    document.getElementById("coinTitle").innerText = c;
     renderTabs();
-    connectWS();
+    loadPrice();
 }
 
-function connectWS(){
-    if(ws) ws.close();
+async function loadPrice(){
+    try{
+        const url = `https://www.okx.com/api/v5/market/ticker?instId=${current}`;
+        const res = await fetch(url);
+        const json = await res.json();
 
-    ws = new WebSocket("wss://ws.okx.com:8443/ws/v5/public");
+        const price = parseFloat(json.data[0].last);
 
-    ws.onopen = ()=>{
-        ws.send(JSON.stringify({
-            op:"subscribe",
-            args:[{
-                channel:"tickers",
-                instId:current
-            }]
-        }));
-    };
+        document.getElementById("price").innerText = price.toFixed(2);
 
-    ws.onmessage = (e)=>{
-        const msg = JSON.parse(e.data);
+        history.push(price);
 
-        if(msg.data && msg.data[0]){
-            const price = parseFloat(msg.data[0].last);
-
-            document.getElementById('price').innerText = price.toFixed(2);
-
-            updatePriceHistory(price);
-            generateSignal();
+        if(history.length > 20){
+            history.shift();
         }
-    };
 
-    ws.onerror = ()=>{
-        document.getElementById('price').innerText = "连接失败";
-    };
-}
+        generateSignal(price);
 
-function updatePriceHistory(price){
-    priceHistory.push(price);
-
-    if(priceHistory.length > 60){
-        priceHistory.shift();
+    }catch(e){
+        document.getElementById("price").innerText = "刷新失败";
     }
 }
 
-function ema(arr, period){
-    if(arr.length < period) return arr[arr.length-1];
+function generateSignal(price){
+    if(history.length < 5) return;
 
-    let k = 2 / (period + 1);
-    let ema = arr[0];
-
-    for(let i=1;i<arr.length;i++){
-        ema = arr[i] * k + ema * (1-k);
-    }
-
-    return ema;
-}
-
-function generateSignal(){
-    if(priceHistory.length < 20) return;
-
-    const last = priceHistory[priceHistory.length-1];
-
-    const ema20 = ema(priceHistory.slice(-20),20);
-    const ema60 = ema(priceHistory,60);
-
-    const trend = ema20 > ema60 ? "多头" : "空头";
-
-    const support = Math.min(...priceHistory.slice(-15));
-    const resistance = Math.max(...priceHistory.slice(-15));
+    const support = Math.min(...history);
+    const resistance = Math.max(...history);
 
     let score = 0;
 
-    if(ema20 > ema60) score += 35;
-    if(Math.abs(last-support)/last < 0.003) score += 30;
-
-    const last3 = priceHistory.slice(-3);
-    if(last3[2] > last3[1] && last3[1] > last3[0]) score += 20;
-
-    if(last > support) score += 15;
+    if(price > history[0]) score += 30;
+    if(Math.abs(price-support)/price < 0.003) score += 30;
+    if(history[4] > history[3]) score += 20;
+    if(price > support) score += 20;
 
     const signal =
         score >= 80 ? "强信号" :
         score >= 65 ? "观察" :
         "等待";
 
-    document.getElementById('trend').innerText = trend;
-    document.getElementById('score').innerText = score;
-    document.getElementById('signal').innerText = signal;
-    document.getElementById('support').innerText = support.toFixed(2);
-    document.getElementById('resistance').innerText = resistance.toFixed(2);
-    document.getElementById('entry').innerText = `${support.toFixed(2)} - ${last.toFixed(2)}`;
-    document.getElementById('sl').innerText = (support*0.998).toFixed(2);
-    document.getElementById('tp1').innerText = resistance.toFixed(2);
-    document.getElementById('tp2').innerText = (resistance*1.003).toFixed(2);
+    const trend = price > history[0] ? "多头" : "空头";
+
+    document.getElementById("trend").innerText = trend;
+    document.getElementById("score").innerText = score;
+    document.getElementById("signal").innerText = signal;
+    document.getElementById("support").innerText = support.toFixed(2);
+    document.getElementById("resistance").innerText = resistance.toFixed(2);
+    document.getElementById("entry").innerText = `${support.toFixed(2)} - ${price.toFixed(2)}`;
+    document.getElementById("sl").innerText = (support * 0.998).toFixed(2);
+    document.getElementById("tp1").innerText = resistance.toFixed(2);
+    document.getElementById("tp2").innerText = (resistance * 1.003).toFixed(2);
 }
 
 renderTabs();
-connectWS();
+loadPrice();
+setInterval(loadPrice, 5000);
 </script>
 </body>
 </html>
