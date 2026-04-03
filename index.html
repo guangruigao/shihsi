@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>OKX 5秒刷新信号系统</title>
+<title>OKX 日内信号系统 V3</title>
 <style>
 body{
     margin:0;
@@ -46,6 +46,21 @@ body{
     font-size:28px;
     font-weight:700;
 }
+button,input{
+    width:100%;
+    padding:12px;
+    border:none;
+    border-radius:10px;
+    margin-top:10px;
+}
+button{
+    background:#238636;
+    color:#fff;
+}
+input{
+    background:#1f2937;
+    color:#fff;
+}
 </style>
 </head>
 <body>
@@ -59,107 +74,173 @@ body{
     <div id="coinTitle">BTC-USDT-SWAP</div>
     <div class="big" id="price">加载中...</div>
     <div class="row"><span>趋势</span><span id="trend">--</span></div>
-    <div class="row"><span>评分</span><span id="score">--</span></div>
+    <div class="row"><span>评分</span><span id="score">0</span></div>
     <div class="row"><span>信号</span><span id="signal">等待</span></div>
 </div>
 
 <div class="card">
     <div class="row"><span>支撑</span><span id="support">--</span></div>
     <div class="row"><span>压力</span><span id="resistance">--</span></div>
-    <div class="row"><span>建议进场</span><span id="entry">--</span></div>
+    <div class="row"><span>进场</span><span id="entry">--</span></div>
     <div class="row"><span>止损</span><span id="sl">--</span></div>
-    <div class="row"><span>TP1</span><span id="tp1">--</span></div>
-    <div class="row"><span>TP2</span><span id="tp2">--</span></div>
+    <div class="row"><span>TP</span><span id="tp">--</span></div>
+</div>
+
+<div class="card">
+    <input id="capital" value="1000" placeholder="本金">
+    <input id="lev" value="5" placeholder="杠杆">
+    <button onclick="runBacktest()">策略回测</button>
+    <div id="backtest" style="margin-top:12px">等待回测</div>
 </div>
 
 </div>
 
 <script>
-const coins = [
-    "BTC-USDT-SWAP",
-    "ETH-USDT-SWAP",
-    "SOL-USDT-SWAP",
-    "XRP-USDT-SWAP",
-    "DOGE-USDT-SWAP",
-    "BNB-USDT-SWAP"
+const coins=[
+"BTC-USDT-SWAP",
+"ETH-USDT-SWAP",
+"SOL-USDT-SWAP",
+"XRP-USDT-SWAP",
+"DOGE-USDT-SWAP",
+"BNB-USDT-SWAP"
 ];
 
-let current = coins[0];
-let history = [];
+let current=coins[0];
+let history=[];
 
 function renderTabs(){
-    let html = "";
+    let html="";
     coins.forEach(c=>{
-        html += `<div class="tab ${c===current?'active':''}" onclick="switchCoin('${c}')">${c.split('-')[0]}</div>`;
+        html+=`<div class="tab ${c===current?'active':''}" onclick="switchCoin('${c}')">${c.split('-')[0]}</div>`;
     });
-    document.getElementById("tabs").innerHTML = html;
+    document.getElementById("tabs").innerHTML=html;
 }
 
 function switchCoin(c){
-    current = c;
-    history = [];
-    document.getElementById("coinTitle").innerText = c;
+    current=c;
+    history=[];
+    document.getElementById("coinTitle").innerText=c;
     renderTabs();
     loadPrice();
 }
 
 async function loadPrice(){
     try{
-        const url = `https://www.okx.com/api/v5/market/ticker?instId=${current}`;
-        const res = await fetch(url);
-        const json = await res.json();
+        const res=await fetch(`https://www.okx.com/api/v5/market/ticker?instId=${current}`);
+        const json=await res.json();
 
-        const price = parseFloat(json.data[0].last);
+        const price=parseFloat(json.data[0].last);
 
-        document.getElementById("price").innerText = price.toFixed(2);
+        document.getElementById("price").innerText=price.toFixed(2);
 
         history.push(price);
 
-        if(history.length > 20){
+        if(history.length>100){
             history.shift();
         }
 
         generateSignal(price);
 
     }catch(e){
-        document.getElementById("price").innerText = "刷新失败";
+        document.getElementById("price").innerText="刷新失败";
     }
 }
 
 function generateSignal(price){
-    if(history.length < 5) return;
+    if(history.length<5){
+        document.getElementById("score").innerText=50;
+        return;
+    }
 
-    const support = Math.min(...history);
-    const resistance = Math.max(...history);
+    const support=Math.min(...history.slice(-10));
+    const resistance=Math.max(...history.slice(-10));
 
-    let score = 0;
+    let score=50;
 
-    if(price > history[0]) score += 30;
-    if(Math.abs(price-support)/price < 0.003) score += 30;
-    if(history[4] > history[3]) score += 20;
-    if(price > support) score += 20;
+    const trend=price>history[0]?"多头":"空头";
 
-    const signal =
-        score >= 80 ? "强信号" :
-        score >= 65 ? "观察" :
-        "等待";
+    if(price>history[0]) score+=15;
 
-    const trend = price > history[0] ? "多头" : "空头";
+    const nearSupport=Math.abs(price-support)/price<0.003;
+    if(nearSupport) score+=20;
 
-    document.getElementById("trend").innerText = trend;
-    document.getElementById("score").innerText = score;
-    document.getElementById("signal").innerText = signal;
-    document.getElementById("support").innerText = support.toFixed(2);
-    document.getElementById("resistance").innerText = resistance.toFixed(2);
-    document.getElementById("entry").innerText = `${support.toFixed(2)} - ${price.toFixed(2)}`;
-    document.getElementById("sl").innerText = (support * 0.998).toFixed(2);
-    document.getElementById("tp1").innerText = resistance.toFixed(2);
-    document.getElementById("tp2").innerText = (resistance * 1.003).toFixed(2);
+    const recent=history.slice(-3);
+    const rebound=recent[2]>recent[1] && recent[1]<=recent[0];
+    if(rebound) score+=15;
+
+    const signal=score>=80?"强信号":score>=65?"观察":"等待";
+
+    document.getElementById("trend").innerText=trend;
+    document.getElementById("score").innerText=score;
+    document.getElementById("signal").innerText=signal;
+    document.getElementById("support").innerText=support.toFixed(2);
+    document.getElementById("resistance").innerText=resistance.toFixed(2);
+    document.getElementById("entry").innerText=price.toFixed(2);
+    document.getElementById("sl").innerText=(support*0.998).toFixed(2);
+    document.getElementById("tp").innerText=(resistance*1.003).toFixed(2);
+}
+
+function runBacktest(){
+    if(history.length<20){
+        document.getElementById("backtest").innerText="请先等待更多价格数据";
+        return;
+    }
+
+    const capital=parseFloat(document.getElementById("capital").value)||1000;
+    const lev=parseFloat(document.getElementById("lev").value)||5;
+
+    let trades=0;
+    let wins=0;
+    let pnlR=0;
+    let maxLossStreak=0;
+    let lossStreak=0;
+
+    for(let i=5;i<history.length-3;i++){
+        const support=Math.min(...history.slice(i-5,i));
+        const entry=history[i];
+        const sl=support*0.998;
+        const tp=entry+(entry-sl)*2;
+
+        trades++;
+
+        let result=0;
+
+        for(let j=i+1;j<i+4;j++){
+            if(history[j]>=tp){
+                result=2;
+                break;
+            }
+            if(history[j]<=sl){
+                result=-1;
+                break;
+            }
+        }
+
+        if(result===2){
+            wins++;
+            pnlR+=2;
+            lossStreak=0;
+        }else{
+            pnlR-=1;
+            lossStreak++;
+            maxLossStreak=Math.max(maxLossStreak,lossStreak);
+        }
+    }
+
+    const winRate=((wins/trades)*100).toFixed(1);
+    const finalCapital=(capital*(1+pnlR*0.01*lev)).toFixed(2);
+
+    document.getElementById("backtest").innerHTML=
+        `总交易：${trades}<br>
+         胜率：${winRate}%<br>
+         收益：${pnlR}R<br>
+         最大连亏：${maxLossStreak}<br>
+         模拟资金：${finalCapital} USDT`;
 }
 
 renderTabs();
 loadPrice();
-setInterval(loadPrice, 5000);
+setInterval(loadPrice,5000);
 </script>
 </body>
 </html>
